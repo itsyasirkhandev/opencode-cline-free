@@ -11,12 +11,12 @@ Current free rotation (2026-09-13):
 
 | Model id | Notes |
 |---|---|
-| `cline-free/muse-spark-1.3-contributor` | Cline-only free |
-| `deepseek/deepseek-v4-flash` | Cline-only free (1M ctx) |
-| `z-ai/glm-5.3-flash` | also on Zen |
-| `cline-free/solar-pro4` | Cline-only free |
-| `cline-free/longcat-2.0` | Cline-only free |
-| `poolside/laguna-s-2.1:free` | also on Zen |
+| `cline-free/muse-spark-1.3-contributor` | Cline-only free | low, medium, high (`max` fails server-side) |
+| `deepseek/deepseek-v4-flash` | Cline-only free (1M ctx) | low, medium, high, max |
+| `z-ai/glm-5.3-flash` | also on Zen | low, high, max |
+| `cline-free/solar-pro4` | Cline-only free | low, medium, high, max |
+| `cline-free/longcat-2.0` | Cline-only free | low, medium, high, max |
+| `poolside/laguna-s-2.1:free` | also on Zen | vendor off/max only, max default (no variants) |
 
 So if `glm-5.3-flash` + `laguna` already work for you via Zen, this plugin
 adds the other 4.

@@ -84,6 +84,22 @@ const LIMITS: Record<string, { context: number; output: number }> = {
 }
 const DEFAULT_LIMIT = { context: 200_000, output: 32_000 }
 
+// Valid reasoning efforts, probed live against
+// https://api.cline.bot/api/v1/chat/completions (2026-09-13):
+// - every free model accepts low/medium/high/max EXCEPT
+//   muse-spark-1.3 (`max` → HTTP 500 inference failure)
+// - glm officially documents low/high/max only (medium is accepted but
+//   mapped to max by the companion reasoning hook)
+// - laguna exposes only off/max (max is default) → no variants
+const VARIANTS: Record<string, string[]> = {
+  "cline-free/muse-spark-1.3-contributor": ["low", "medium", "high"],
+  "deepseek/deepseek-v4-flash": ["low", "medium", "high", "max"],
+  "z-ai/glm-5.3-flash": ["low", "high", "max"],
+  "cline-free/solar-pro4": ["low", "medium", "high", "max"],
+  "cline-free/longcat-2.0": ["low", "medium", "high", "max"],
+  "poolside/laguna-s-2.1:free": [],
+}
+
 function withWorkOSPrefix(token: string): string {
   const t = token.trim()
   return t.toLowerCase().startsWith(WORKOS_PREFIX) ? t : `${WORKOS_PREFIX}${t}`
@@ -96,6 +112,9 @@ function displayName(entry: FreeEntry): string {
 
 function modelConfig(entry: FreeEntry) {
   const limit = LIMITS[entry.id] ?? DEFAULT_LIMIT
+  const levels = VARIANTS[entry.id] ?? ["low", "medium", "high", "max"]
+  const variants: Record<string, { reasoningEffort: string }> = {}
+  for (const level of levels) variants[level] = { reasoningEffort: level }
   return {
     name: displayName(entry),
     limit: { context: limit.context, output: limit.output },
@@ -103,6 +122,7 @@ function modelConfig(entry: FreeEntry) {
     tool_call: true,
     reasoning: true,
     cost: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
+    ...(levels.length > 0 ? { variants } : {}),
   }
 }
 
@@ -363,6 +383,7 @@ const ClineFreePlugin: Plugin = async ({ client }) => {
           ...(existing.options ?? {}),
           baseURL: existing.options?.baseURL ?? CHAT_BASE_URL,
           headers: {
+            Accept: "application/json",
             "HTTP-Referer": "https://cline.bot",
             "X-Title": "OpenCode",
             ...(existing.options?.headers ?? {}),
