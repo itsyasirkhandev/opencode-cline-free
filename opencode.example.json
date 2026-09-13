@@ -1,0 +1,5 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["./code/opencode-cline-free/index.ts"],
+  "model": "cline-free/deepseek/deepseek-v4-flash"
+}
