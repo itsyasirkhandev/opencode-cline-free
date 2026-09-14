@@ -87,12 +87,13 @@ const DEFAULT_LIMIT = { context: 200_000, output: 32_000 }
 // Valid reasoning efforts, probed live against
 // https://api.cline.bot/api/v1/chat/completions (2026-09-13):
 // - every free model accepts low/medium/high/max EXCEPT
-//   muse-spark-1.3 (`max` → HTTP 500 inference failure)
+//   muse-spark-1.3 (accepts minimal/low/medium/high/xhigh;
+//   `max` → HTTP 500 invalid_request_error from Meta via OpenRouter)
 // - glm officially documents low/high/max only (medium is accepted but
 //   mapped to max by the companion reasoning hook)
 // - laguna exposes only off/max (max is default) → no variants
 const VARIANTS: Record<string, string[]> = {
-  "cline-free/muse-spark-1.3-contributor": ["low", "medium", "high"],
+  "cline-free/muse-spark-1.3-contributor": ["minimal", "low", "medium", "high", "xhigh"],
   "deepseek/deepseek-v4-flash": ["low", "medium", "high", "max"],
   "z-ai/glm-5.3-flash": ["low", "high", "max"],
   "cline-free/solar-pro4": ["low", "medium", "high", "max"],
