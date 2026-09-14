@@ -76,7 +76,19 @@ const FALLBACK_FREE: FreeEntry[] = [
 // budgeting/truncation; the server remains authoritative).
 // Sources: models.dev canonical entries (nano-gpt) + opencode `-free`
 // entries; output values use the conservative free-tier caps.
-// Cost stays $0 — Cline bills these ids at $0 via usage-billing.
+// Reference vendor rates ($/1M tokens, models.dev nano-gpt canonical).
+// Display-only: Cline bills these ids at $0 via free quota, so the
+// injected cost uses input/output/cache_read for stats display with
+// cache_write 0 (no vendor publishes a write rate for these).
+const COSTS: Record<string, { input: number; output: number; cache_read: number }> = {
+  "cline-free/muse-spark-1.3-contributor": { input: 0.1, output: 0.2, cache_read: 0.002 },
+  "deepseek/deepseek-v4-flash": { input: 0.14, output: 0.28, cache_read: 0.0028 },
+  "z-ai/glm-5.3-flash": { input: 0.075, output: 0.25, cache_read: 0.015 },
+  "cline-free/solar-pro4": { input: 0.03, output: 0.12, cache_read: 0.006 },
+  "cline-free/longcat-2.0": { input: 0.75, output: 3.0, cache_read: 0.015 },
+  "poolside/laguna-s-2.1:free": { input: 0.1, output: 0.2, cache_read: 0.01 },
+}
+const DEFAULT_COST = { input: 0, output: 0, cache_read: 0 }
 const LIMITS: Record<string, { context: number; output: number }> = {
   "cline-free/muse-spark-1.3-contributor": { context: 1_048_576, output: 131_072 },
   "deepseek/deepseek-v4-flash": { context: 1_048_576, output: 384_000 },
@@ -127,6 +139,7 @@ function displayName(entry: FreeEntry): string {
 function modelConfig(entry: FreeEntry) {
   const limit = LIMITS[entry.id] ?? DEFAULT_LIMIT
   const levels = VARIANTS[entry.id] ?? ["low", "medium", "high", "max"]
+  const cost = COSTS[entry.id] ?? DEFAULT_COST
   const variants: Record<string, { reasoningEffort: string }> = {}
   for (const level of levels) variants[level] = { reasoningEffort: level }
   return {
@@ -135,7 +148,7 @@ function modelConfig(entry: FreeEntry) {
     modalities: { input: INPUT_MODALITIES[entry.id] ?? ["text"], output: ["text"] },
     tool_call: true,
     reasoning: true,
-    cost: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
+    cost: { input: cost.input, output: cost.output, cache_read: cost.cache_read, cache_write: 0 },
     ...(levels.length > 0 ? { variants } : {}),
   }
 }
