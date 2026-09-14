@@ -74,15 +74,28 @@ const FALLBACK_FREE: FreeEntry[] = [
 
 // Best-effort context/output limits (OpenCode only uses these for
 // budgeting/truncation; the server remains authoritative).
+// Sources: models.dev canonical entries (nano-gpt) + opencode `-free`
+// entries; output values use the conservative free-tier caps.
+// Cost stays $0 — Cline bills these ids at $0 via usage-billing.
 const LIMITS: Record<string, { context: number; output: number }> = {
-  "cline-free/muse-spark-1.3-contributor": { context: 256_000, output: 32_000 },
-  "deepseek/deepseek-v4-flash": { context: 1_048_576, output: 32_768 },
-  "z-ai/glm-5.3-flash": { context: 200_000, output: 64_000 },
-  "cline-free/solar-pro4": { context: 128_000, output: 32_000 },
-  "cline-free/longcat-2.0": { context: 256_000, output: 64_000 },
-  "poolside/laguna-s-2.1:free": { context: 256_000, output: 32_768 },
+  "cline-free/muse-spark-1.3-contributor": { context: 1_048_576, output: 131_072 },
+  "deepseek/deepseek-v4-flash": { context: 1_048_576, output: 384_000 },
+  "z-ai/glm-5.3-flash": { context: 1_048_576, output: 131_072 },
+  "cline-free/solar-pro4": { context: 524_288, output: 131_072 },
+  "cline-free/longcat-2.0": { context: 1_000_000, output: 131_072 },
+  "poolside/laguna-s-2.1:free": { context: 256_000, output: 32_000 },
 }
 const DEFAULT_LIMIT = { context: 200_000, output: 32_000 }
+
+// Multimodal input per models.dev; output is text-only for all six.
+const INPUT_MODALITIES: Record<string, string[]> = {
+  "cline-free/muse-spark-1.3-contributor": ["text", "image", "video", "audio", "pdf"],
+  "deepseek/deepseek-v4-flash": ["text"],
+  "z-ai/glm-5.3-flash": ["text", "image", "video"],
+  "cline-free/solar-pro4": ["text"],
+  "cline-free/longcat-2.0": ["text"],
+  "poolside/laguna-s-2.1:free": ["text"],
+}
 
 // Valid reasoning efforts, probed live against
 // https://api.cline.bot/api/v1/chat/completions (2026-09-13):
@@ -119,7 +132,7 @@ function modelConfig(entry: FreeEntry) {
   return {
     name: displayName(entry),
     limit: { context: limit.context, output: limit.output },
-    modalities: { input: ["text"], output: ["text"] },
+    modalities: { input: INPUT_MODALITIES[entry.id] ?? ["text"], output: ["text"] },
     tool_call: true,
     reasoning: true,
     cost: { input: 0, output: 0, cache_read: 0, cache_write: 0 },
