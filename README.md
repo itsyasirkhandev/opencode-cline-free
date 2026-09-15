@@ -7,19 +7,21 @@ Live source: `GET https://api.cline.bot/api/v1/ai/cline/recommended-models`
 (`free` array). The plugin fetches it on every startup, so rotations appear
 automatically. Offline it falls back to a bundled list.
 
-Current free rotation (2026-09-13):
+Current free rotation (2026-09-15):
 
 | Model id | Notes |
 |---|---|
+| `cline-free/deepseek-v4.1-flash` | Cline-only free, native text+image input, 1M ctx / 384K out | low, high, max (no medium) |
 | `cline-free/muse-spark-1.3-contributor` | Cline-only free | low, medium, high (`max` fails server-side) |
-| `deepseek/deepseek-v4-flash` | Cline-only free (1M ctx) | low, medium, high, max |
 | `z-ai/glm-5.3-flash` | also on Zen | low, high, max |
 | `cline-free/solar-pro4` | Cline-only free | low, medium, high, max |
-| `cline-free/longcat-2.0` | Cline-only free | low, medium, high, max |
 | `poolside/laguna-s-2.1:free` | also on Zen | vendor off/max only, max default (no variants) |
 
+Rotated out: `deepseek/deepseek-v4-flash`, `cline-free/longcat-2.0`
+(previous rotation; ids kept in the plugin as known/stale).
+
 So if `glm-5.3-flash` + `laguna` already work for you via Zen, this plugin
-adds the other 4.
+adds the other 3.
 
 ## Install (local)
 
@@ -75,14 +77,16 @@ or in `opencode.json`:
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "model": "cline-free/deepseek/deepseek-v4-flash"
+  "model": "cline-free/cline-free/deepseek-v4.1-flash"
 }
 ```
 
-> Note: model ids contain a `/` themselves (e.g. `deepseek/deepseek-v4-flash`),
-> so the full spec is `cline-free/deepseek/deepseek-v4-flash`.
+> Note: model ids contain a `/` themselves (e.g. `cline-free/deepseek-v4.1-flash`),
+> so the full spec is `cline-free/cline-free/deepseek-v4.1-flash`.
 > `cline-free/...` ids are Cline-native free ids; `z-ai/...`,
-> `deepseek/...`, `poolside/...:free` ride Cline usage-billing at $0.
+> `poolside/...:free` ride Cline usage-billing at $0.
+> The previous `deepseek/deepseek-v4-flash` id (`cline-free/deepseek/deepseek-v4-flash`)
+> has rotated out of the free list.
 
 ## Publish to npm (optional)
 
