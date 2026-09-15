@@ -17,8 +17,8 @@ Current free rotation (2026-09-15):
 | `cline-free/solar-pro4` | Cline-only free | low, medium, high, max |
 | `poolside/laguna-s-2.1:free` | also on Zen | vendor off/max only, max default (no variants) |
 
-Rotated out: `deepseek/deepseek-v4-flash`, `cline-free/longcat-2.0`
-(previous rotation; ids kept in the plugin as known/stale).
+Rotated out: `deepseek/deepseek-v4-flash`
+(previous rotation; id kept in the plugin as known/stale).
 
 So if `glm-5.3-flash` + `laguna` already work for you via Zen, this plugin
 adds the other 3.

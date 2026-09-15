@@ -14,8 +14,8 @@ import type { Plugin } from "@opencode-ai/plugin"
  * - cline-free/solar-pro4
  * - poolside/laguna-s-2.1:free
  * (glm-5.3-flash + laguna overlap with Zen, the other 3 are Cline-only free.)
- * Note: cline-free/longcat-2.0 (2026-09-13) and deepseek/deepseek-v4-flash
- * (2026-09-13) have rotated out; kept as known ids for stale configs.
+ * Note: deepseek/deepseek-v4-flash (2026-09-13) has rotated out; kept as
+ * a known id for stale configs.
  */
 
 const PROVIDER_ID = "cline-free"
@@ -84,7 +84,6 @@ const COSTS: Record<string, { input: number; output: number; cache_read: number 
   "deepseek/deepseek-v4-flash": { input: 0.14, output: 0.28, cache_read: 0.0028 },
   "z-ai/glm-5.3-flash": { input: 0.075, output: 0.25, cache_read: 0.015 },
   "cline-free/solar-pro4": { input: 0.03, output: 0.12, cache_read: 0.006 },
-  "cline-free/longcat-2.0": { input: 0.75, output: 3.0, cache_read: 0.015 },
   "poolside/laguna-s-2.1:free": { input: 0.1, output: 0.2, cache_read: 0.01 },
 }
 const DEFAULT_COST = { input: 0, output: 0, cache_read: 0 }
@@ -95,7 +94,6 @@ const LIMITS: Record<string, { context: number; output: number }> = {
   "deepseek/deepseek-v4-flash": { context: 1_048_576, output: 384_000 },
   "z-ai/glm-5.3-flash": { context: 1_048_576, output: 131_072 },
   "cline-free/solar-pro4": { context: 524_288, output: 131_072 },
-  "cline-free/longcat-2.0": { context: 1_000_000, output: 131_072 },
   "poolside/laguna-s-2.1:free": { context: 256_000, output: 32_000 },
 }
 const DEFAULT_LIMIT = { context: 200_000, output: 32_000 }
@@ -111,7 +109,6 @@ const INPUT_MODALITIES: Record<string, string[]> = {
   "deepseek/deepseek-v4-flash": ["text"],
   "z-ai/glm-5.3-flash": ["text", "image", "video"],
   "cline-free/solar-pro4": ["text"],
-  "cline-free/longcat-2.0": ["text"],
   "poolside/laguna-s-2.1:free": ["text"],
 }
 
@@ -132,7 +129,6 @@ const VARIANTS: Record<string, string[]> = {
   "deepseek/deepseek-v4-flash": ["low", "medium", "high", "max"],
   "z-ai/glm-5.3-flash": ["low", "high", "max"],
   "cline-free/solar-pro4": ["low", "medium", "high", "max"],
-  "cline-free/longcat-2.0": ["low", "medium", "high", "max"],
   "poolside/laguna-s-2.1:free": [],
 }
 
