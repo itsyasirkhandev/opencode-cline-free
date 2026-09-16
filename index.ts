@@ -1208,6 +1208,40 @@ const ClineFreePlugin: Plugin = async ({ client }) => {
       methods: [
         {
           type: "oauth",
+          label: "Cline account (free models, recommended)",
+          async authorize() {
+            const device = await startDeviceAuth()
+            return {
+              url: device.verificationUriComplete ?? device.verificationUri,
+              instructions:
+                `Open the URL (code ${device.userCode} is pre-filled). ` +
+                `Already logged into Cline in this browser? Just click Confirm/Approve — no password needed. ` +
+                `Otherwise log in with Google/GitHub/Microsoft, then approve. ` +
+                `Then wait — OpenCode completes login automatically.`,
+              method: "auto" as const,
+              callback: async () => {
+                try {
+                  const workos = await pollDeviceAuth(
+                    device.deviceCode,
+                    device.expiresInSeconds,
+                    device.intervalSeconds,
+                  )
+                  const creds = await registerWorkOSTokens(workos)
+                  const email = await fetchUserEmail(creds.access)
+                  const acc = upsertOAuthAccount(pool, creds, email, "oauth")
+                  if (email) acc.label = email
+                  void savePoolFile(pool).catch(() => {})
+                  log("info", `cline-free: added account ${acc.label ?? acc.id} (${pool.accounts.length} total)`, { accountId: acc.id })
+                  return { type: "success" as const, ...creds }
+                } catch {
+                  return { type: "failed" as const }
+                }
+              },
+            }
+          },
+        },
+        {
+          type: "oauth",
           label: "Reuse Cline CLI login (this machine, 1 confirm)",
           async authorize() {
             const session = await readClineCliSession()
@@ -1242,47 +1276,13 @@ const ClineFreePlugin: Plugin = async ({ client }) => {
                   } else if (!(await validateClineToken(access))) {
                     return { type: "failed" as const }
                   }
-                  // Append to the pool (never replace): repeated logins
-                  // accumulate rotation candidates.
+                  // Update in place on same-user re-login, append only
+                  // for new users (quota is per Cline user).
                   const acc = upsertOAuthAccount(pool, { access, refresh, expires }, session.email, "cli")
                   if (session.email) acc.label = session.email
                   void savePoolFile(pool).catch(() => {})
                   log("info", `cline-free: added CLI-imported account ${acc.label ?? acc.id} (${pool.accounts.length} total)`, { accountId: acc.id })
                   return { type: "success" as const, access, refresh, expires }
-                } catch {
-                  return { type: "failed" as const }
-                }
-              },
-            }
-          },
-        },
-        {
-          type: "oauth",
-          label: "Cline account (free models, recommended)",
-          async authorize() {
-            const device = await startDeviceAuth()
-            return {
-              url: device.verificationUriComplete ?? device.verificationUri,
-              instructions:
-                `Open the URL (code ${device.userCode} is pre-filled). ` +
-                `Already logged into Cline in this browser? Just click Confirm/Approve — no password needed. ` +
-                `Otherwise log in with Google/GitHub/Microsoft, then approve. ` +
-                `Then wait — OpenCode completes login automatically.`,
-              method: "auto" as const,
-              callback: async () => {
-                try {
-                  const workos = await pollDeviceAuth(
-                    device.deviceCode,
-                    device.expiresInSeconds,
-                    device.intervalSeconds,
-                  )
-                  const creds = await registerWorkOSTokens(workos)
-                  const email = await fetchUserEmail(creds.access)
-                  const acc = upsertOAuthAccount(pool, creds, email, "oauth")
-                  if (email) acc.label = email
-                  void savePoolFile(pool).catch(() => {})
-                  log("info", `cline-free: added account ${acc.label ?? acc.id} (${pool.accounts.length} total)`, { accountId: acc.id })
-                  return { type: "success" as const, ...creds }
                 } catch {
                   return { type: "failed" as const }
                 }

@@ -42,13 +42,13 @@ Restart OpenCode.
 ```text
 /connect
 # pick "cline-free", then one of:
-# 1. Reuse Cline CLI login (this machine, 1 confirm)  <- fastest if `cline auth` was run here
-# 2. Cline account (free models, recommended)         <- browser device-code flow
+# 1. Cline account (free models, recommended)         <- browser device-code flow
+# 2. Reuse Cline CLI login (this machine, 1 confirm)  <- fastest if `cline auth` was run here
 # 3. Cline token (manual)                             <- paste a workos:... token
 ```
 
-Repeat `/connect` → `cline-free` for every extra Cline account: logins
-**append** to the rotation pool instead of replacing each other.
+Repeat `/connect` → `cline-free` for every extra Cline account: new users
+join the rotation pool (re-logging the same user updates it in place).
 
 ## Multiple accounts + 429 failover
 
@@ -78,15 +78,15 @@ Add accounts three ways (they merge, deduped by token):
    cooldowns), `cline_free_add_token` (validate + add a token),
    `cline_free_remove` (drop a stored account by id).
 
-Already logged into Cline in your browser? Method 2 is then a single
+Already logged into Cline in your browser? Method 1 is then a single
 Confirm/Approve click: the login URL has your code pre-filled, so with an
 active Cline browser session there's no password and no code to type —
 just approve and OpenCode finishes automatically. (A terminal can't read
 browser cookies, so that one click is the minimum the OAuth flow allows.)
 
-1 confirm? If this machine already has a Cline CLI login
+Skip the browser? If this machine already has a Cline CLI login
 (`~/.cline/data/settings/providers.json`, honors `CLINE_DATA_DIR`/`CLINE_DIR`),
-method 1 imports its OAuth tokens directly — the account email is shown,
+method 2 imports its OAuth tokens directly — the account email is shown,
 you just confirm, no browser code. Expired tokens are refreshed automatically.
 
 Manual alternative: `/connect` -> `cline-free` -> `Cline token (manual)` and
