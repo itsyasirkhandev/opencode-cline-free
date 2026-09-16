@@ -62,8 +62,12 @@ Free quota is per Cline account and resets daily. The plugin keeps a pool
   is parked until it recovers (`Retry-After` when the server sends one,
   otherwise next UTC midnight for the daily reset) and the **same request
   is retried** on the next account — the turn doesn't fail.
-- Only `429` triggers a switch. `401/403/5xx` pass through untouched so
-  real login problems and outages stay visible.
+  `401/403` auth rejections (`Unauthorized: ... re-authenticate ...`)
+  get the same treatment: the dead account is refreshed once in place and
+  replayed, otherwise it is quarantined (`NEEDS-RELOGIN` in
+  `cline_free_status`) and the same request is retried on the next healthy
+  account. Only non-auth `403/5xx` pass through untouched so real permission
+  problems and outages stay visible.
 - Cooldowns persist in the pool file, so they survive restarts.
 
 Add accounts three ways (they merge, deduped by token):

@@ -760,6 +760,17 @@ function isRoutableUrl(url: string): boolean {
   )
 }
 
+/** True when a 401/403 body looks like a dead session (not a permission /
+ * retired-model error). 401 is always treated as auth; 403 only when the
+ * body says so, so real 403s (no access to resource) stay visible. */
+function isAuthFailure(status: number, snippet: string): boolean {
+  if (status === 401) return true
+  if (status !== 403) return false
+  return /unauthor|re-authenticate|reauthenticate|invalid_grant|invalid_token|expired|please .* (login|authenticate)/i.test(
+    snippet,
+  )
+}
+
 async function loadPoolFile(): Promise<PoolFile> {
   try {
     const { readFile } = await import("node:fs/promises")
@@ -1249,11 +1260,14 @@ function describeLimits(pool: PoolFile): string {
   return ` Limited: ${limited.map((a) => `${a.label ?? a.id}→${new Date(a.limitedUntil!).toISOString()}`).join(", ")}.`
 }
 
-// --- Transparent same-request 429 failover ---
+// --- Transparent same-request 429 + 401 failover ---
 //
 // OpenCode's AI SDK performs the HTTPS call with the apiKey the loader
 // returned. When Cline answers 429 we swap in the next healthy account and
 // replay the request, so one exhausted daily quota doesn't fail the turn.
+// The same router handles 401/403 auth rejections: it refreshes the dead
+// account once in place and replays, else quarantines it (NEEDS-RELOGIN)
+// and retries the SAME request on the next healthy account.
 
 const FETCH_PATCH_KEY = "__cline_free_fetch_router__"
 
@@ -1323,9 +1337,28 @@ function installFetchRouter(pool: PoolFile, log: Logger): void {
         : undefined
 
     const tried = new Set<string>()
+    const refreshedInRequest = new Set<string>()
     let lastRes: Response | undefined
+    let lastAuthRes: Response | undefined
     // Bound attempts: first identity + every other healthy candidate once.
     const maxAttempts = allCandidates(pool).length + 1
+
+    const readSnippet = async (res: Response): Promise<string> => {
+      try {
+        return ((await res.clone().text().catch(() => "")) || "").slice(0, 300)
+      } catch {
+        return ""
+      }
+    }
+    const drain = async (res: Response): Promise<void> => {
+      try {
+        await res.arrayBuffer().catch(() => {})
+      } catch {
+        /* ignore */
+      }
+    }
+    const cleanDetail = (snippet: string): string | undefined =>
+      snippet.replace(/\s+/g, " ").trim().slice(0, 160) || undefined
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       let token: string
@@ -1362,6 +1395,97 @@ function installFetchRouter(pool: PoolFile, log: Logger): void {
       } catch (e) {
         throw e
       }
+
+      // --- Auth recovery: Cline's generic session-reject body is
+      // "Unauthorized: Please make sure you're using the latest version of
+      // Cline and re-authenticate your Cline account." (HTTP 401). Tokens
+      // are short-lived (~30 min), so a token that looked fresh in the
+      // loader can be dead by request time — or revoked early when the same
+      // Cline user refreshes elsewhere (VSCode/CLI/browser rotates the
+      // refresh token, old copies get invalid_grant). Refresh once in place,
+      // else quarantine this account and fail over to the next healthy one
+      // (same transparent retry the 429 path already does).
+      if (res.status === 401 || res.status === 403) {
+        const snippet = await readSnippet(res)
+        if (!isAuthFailure(res.status, snippet)) {
+          if (accountId) {
+            pool.activeId = accountId
+            const acc = pool.accounts.find((a) => a.id === accountId)
+            if (acc) {
+              acc.lastUsed = Date.now()
+              void savePoolFile(pool).catch(() => {})
+            }
+          }
+          return res
+        }
+        const detail = cleanDetail(snippet)
+        const acc = accountId ? pool.accounts.find((a) => a.id === accountId) : undefined
+        if (acc?.refresh && !refreshedInRequest.has(acc.id)) {
+          refreshedInRequest.add(acc.id)
+          try {
+            await refreshAccount(pool, acc, log)
+            const fresh = tokenOf(acc)
+            if (fresh) {
+              const h2 = new Headers(headers)
+              h2.set("authorization", `Bearer ${withWorkOSPrefix(fresh)}`)
+              const res2 = await origFetch(url, { method, headers: h2, body, signal })
+              if (res2.status !== 401 && res2.status !== 403 && res2.status !== 429) {
+                pool.activeId = acc.id
+                acc.lastUsed = Date.now()
+                void savePoolFile(pool).catch(() => {})
+                if (attempt > 0)
+                  log("info", `cline-free: request recovered on ${acc.label ?? acc.id} after re-auth (attempt ${attempt + 1})`)
+                else log("info", `cline-free: request recovered on ${acc.label ?? acc.id} after silent refresh`)
+                await drain(res).catch(() => {})
+                return res2
+              }
+              if (res2.status === 429) {
+                const snippet2 = await readSnippet(res2)
+                await drain(res).catch(() => {})
+                await drain(res2).catch(() => {})
+                markAccountLimited(pool, acc.id, parseRetryAfterMs(res2), log, cleanDetail(snippet2))
+                lastRes = res2
+                continue
+              }
+              const snippet2 = await readSnippet(res2)
+              await drain(res).catch(() => {})
+              await drain(res2).catch(() => {})
+              quarantineAccount(
+                pool,
+                acc,
+                `Cline rejected refreshed token (HTTP ${res2.status}${cleanDetail(snippet2) ? `: ${cleanDetail(snippet2)}` : ""})`,
+                log,
+              )
+              lastAuthRes = res2
+              continue
+            }
+          } catch (e) {
+            await drain(res).catch(() => {})
+            if (e instanceof TerminalAuthError) {
+              quarantineAccount(pool, acc, e.message, log)
+            } else {
+              log("warn", `cline-free: token refresh failed for ${acc.label ?? acc.id}: ${e instanceof Error ? e.message : String(e)} — trying next account`, { accountId: acc.id })
+              acc.lastError = "refresh failed"
+              void savePoolFile(pool).catch(() => {})
+            }
+            lastAuthRes = res
+            continue
+          }
+        }
+        // No refresh token (manual/env token) or already refreshed this
+        // request: this identity is dead — park it and try the next account.
+        await drain(res).catch(() => {})
+        if (acc) {
+          quarantineAccount(pool, acc, `Cline returned HTTP ${res.status}${detail ? `: ${detail}` : ""}`, log)
+        } else {
+          log("warn", `cline-free: 401/403 on untracked identity (${maskToken(token)})${detail ? ` — ${detail}` : ""}`)
+          // Untracked identity can't fail over to anything known — surface it.
+          return res
+        }
+        lastAuthRes = res
+        continue
+      }
+
       if (res.status !== 429) {
         if (accountId) {
           pool.activeId = accountId
@@ -1371,24 +1495,15 @@ function installFetchRouter(pool: PoolFile, log: Logger): void {
             void savePoolFile(pool).catch(() => {})
           }
         }
-        if (attempt > 0) log("info", `cline-free: request recovered on ${pool.accounts.find((a) => a.id === accountId)?.label ?? "fallback account"} after 429 (attempt ${attempt + 1})`)
+        if (attempt > 0) log("info", `cline-free: request recovered on ${pool.accounts.find((a) => a.id === accountId)?.label ?? "fallback account"} after 429/re-auth (attempt ${attempt + 1})`)
         return res
       }
 
       // 429: note the snippet, park this account, try the next one.
-      let snippet = ""
-      try {
-        snippet = ((await res.clone().text().catch(() => "")) || "").slice(0, 300)
-      } catch {
-        snippet = ""
-      }
-      try {
-        await res.arrayBuffer().catch(() => {})
-      } catch {
-        /* ignore */
-      }
+      const snippet = await readSnippet(res)
+      await drain(res).catch(() => {})
       const retryAfter = parseRetryAfterMs(res)
-      const detail = snippet.replace(/\s+/g, " ").trim().slice(0, 160) || undefined
+      const detail = cleanDetail(snippet)
       if (accountId && pool.accounts.some((a) => a.id === accountId)) {
         markAccountLimited(pool, accountId, retryAfter, log, detail)
       } else {
@@ -1396,6 +1511,15 @@ function installFetchRouter(pool: PoolFile, log: Logger): void {
         break
       }
       lastRes = res
+    }
+
+    if (lastAuthRes && !lastRes) {
+      const quarantined = pool.accounts
+        .filter((a) => a.authFailedAt)
+        .map((a) => `${a.label ?? a.id}`)
+        .join(", ")
+      log("error", `cline-free: all ${tried.size} account(s) rejected auth (401/403). ${quarantined ? `Quarantined: ${quarantined}. ` : ""}Run /connect → cline-free and log in again; rotation continues when a healthy account exists.`)
+      return lastAuthRes
     }
 
     if (lastRes) {
