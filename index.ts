@@ -1350,6 +1350,12 @@ function installFetchRouter(pool: PoolFile, log: Logger): void {
         return ""
       }
     }
+    // A Response body can be consumed exactly once. Anything we store for a
+    // later `return` (lastRes/lastAuthRes) must be cloned BEFORE the original
+    // is drained — otherwise the caller gets an empty locked body and
+    // surfaces "Failed to process error response". Discarded responses
+    // (we `continue` to the next account) are drained to free the socket.
+    const keepForReturn = (res: Response): Response => res.clone()
     const drain = async (res: Response): Promise<void> => {
       try {
         await res.arrayBuffer().catch(() => {})
@@ -1441,13 +1447,14 @@ function installFetchRouter(pool: PoolFile, log: Logger): void {
               }
               if (res2.status === 429) {
                 const snippet2 = await readSnippet(res2)
+                lastRes = keepForReturn(res2)
                 await drain(res).catch(() => {})
                 await drain(res2).catch(() => {})
                 markAccountLimited(pool, acc.id, parseRetryAfterMs(res2), log, cleanDetail(snippet2))
-                lastRes = res2
                 continue
               }
               const snippet2 = await readSnippet(res2)
+              lastAuthRes = keepForReturn(res2)
               await drain(res).catch(() => {})
               await drain(res2).catch(() => {})
               quarantineAccount(
@@ -1456,10 +1463,10 @@ function installFetchRouter(pool: PoolFile, log: Logger): void {
                 `Cline rejected refreshed token (HTTP ${res2.status}${cleanDetail(snippet2) ? `: ${cleanDetail(snippet2)}` : ""})`,
                 log,
               )
-              lastAuthRes = res2
               continue
             }
           } catch (e) {
+            lastAuthRes = keepForReturn(res)
             await drain(res).catch(() => {})
             if (e instanceof TerminalAuthError) {
               quarantineAccount(pool, acc, e.message, log)
@@ -1468,21 +1475,21 @@ function installFetchRouter(pool: PoolFile, log: Logger): void {
               acc.lastError = "refresh failed"
               void savePoolFile(pool).catch(() => {})
             }
-            lastAuthRes = res
             continue
           }
         }
         // No refresh token (manual/env token) or already refreshed this
         // request: this identity is dead — park it and try the next account.
-        await drain(res).catch(() => {})
         if (acc) {
+          lastAuthRes = keepForReturn(res)
+          await drain(res).catch(() => {})
           quarantineAccount(pool, acc, `Cline returned HTTP ${res.status}${detail ? `: ${detail}` : ""}`, log)
         } else {
           log("warn", `cline-free: 401/403 on untracked identity (${maskToken(token)})${detail ? ` — ${detail}` : ""}`)
-          // Untracked identity can't fail over to anything known — surface it.
+          // Untracked identity can't fail over to anything known — surface
+          // it untouched (no drain: the body must stay readable).
           return res
         }
-        lastAuthRes = res
         continue
       }
 
@@ -1501,6 +1508,7 @@ function installFetchRouter(pool: PoolFile, log: Logger): void {
 
       // 429: note the snippet, park this account, try the next one.
       const snippet = await readSnippet(res)
+      lastRes = keepForReturn(res)
       await drain(res).catch(() => {})
       const retryAfter = parseRetryAfterMs(res)
       const detail = cleanDetail(snippet)
@@ -1510,7 +1518,6 @@ function installFetchRouter(pool: PoolFile, log: Logger): void {
         log("warn", `cline-free: 429 on untracked identity (${maskToken(token)})${detail ? ` — ${detail}` : ""}`)
         break
       }
-      lastRes = res
     }
 
     if (lastAuthRes && !lastRes) {

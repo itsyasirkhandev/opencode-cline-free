@@ -1,6 +1,6 @@
 {
   "name": "opencode-cline-free",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "OpenCode plugin that exposes Cline's rotating free models (cline-free + free OpenRouter-style ids) via your Cline account, with multi-account pooling and automatic 429 failover.",
   "type": "module",
   "main": "index.ts",
