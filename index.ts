@@ -439,6 +439,78 @@ function sameToken(a: string, b: string): boolean {
   return stripWorkOSPrefix(a) === stripWorkOSPrefix(b)
 }
 
+// --- Stable Cline user identity (dedupe key) ---
+//
+// OAuth access tokens are short-lived JWTs: every /connect login and every
+// refresh mints a NEW token string for the SAME Cline user (same
+// external_id/sub, new sid/jti). Deduping by exact token therefore creates
+// a duplicate pool entry per login even though quota is per user.
+// Decode the JWT payload (no verification — identity hint only) and use
+// external_id → sub → email as the stable key, with email-label fallback.
+function b64UrlDecodeToString(b64url: string): string {
+  const b64 = b64url.replace(/-/g, "+").replace(/_/g, "/")
+  const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4)
+  const g = globalThis as { Buffer?: { from(s: string, enc: string): { toString(enc: string): string } }; atob?: (s: string) => string }
+  if (g.Buffer) return g.Buffer.from(padded, "base64").toString("utf8")
+  if (typeof g.atob === "function") {
+    const bin = g.atob(padded)
+    const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0))
+    return new TextDecoder().decode(bytes)
+  }
+  throw new Error("no base64 decoder available")
+}
+
+function decodeJwtPayload(token: string): Record<string, unknown> | undefined {
+  try {
+    const raw = stripWorkOSPrefix(token).trim()
+    const parts = raw.split(".")
+    if (parts.length < 2 || !parts[1]) return undefined
+    return JSON.parse(b64UrlDecodeToString(parts[1])) as Record<string, unknown>
+  } catch {
+    return undefined
+  }
+}
+
+function clineUserKey(token: string): string | undefined {
+  const p = decodeJwtPayload(token)
+  if (!p) return undefined
+  const ext = typeof p.external_id === "string" ? p.external_id.trim() : ""
+  if (ext) return `ext:${ext}`
+  const sub = typeof p.sub === "string" ? p.sub.trim() : ""
+  if (sub) return `sub:${sub}`
+  const email = typeof p.email === "string" ? p.email.trim().toLowerCase() : ""
+  if (email.includes("@")) return `email:${email}`
+  return undefined
+}
+
+function payloadEmail(token: string): string | undefined {
+  const p = decodeJwtPayload(token)
+  const email = typeof p?.email === "string" ? p.email.trim().toLowerCase() : ""
+  return email.includes("@") ? email : undefined
+}
+
+function normalizeEmailLabel(label?: string): string | undefined {
+  if (!label) return undefined
+  const t = label.trim().toLowerCase()
+  return t.includes("@") ? t : undefined
+}
+
+function accountEmail(a: PoolAccount): string | undefined {
+  return normalizeEmailLabel(a.label) ?? (tokenOf(a) ? payloadEmail(tokenOf(a)!) : undefined)
+}
+
+function freshnessOf(a: PoolAccount): number {
+  return Math.max(a.expires ?? 0, a.lastUsed ?? 0, a.addedAt ?? 0)
+}
+
+function isGenericLabel(label?: string): boolean {
+  if (!label) return true
+  const t = label.trim()
+  if (!t) return true
+  if (t.includes("@")) return false
+  return /^(cline-\d+|token-…|token-|connect-token|account-\d+)$/i.test(t) || t.length <= 8
+}
+
 function maskToken(token: string): string {
   const t = stripWorkOSPrefix(token)
   if (t.length <= 10) return "…"
@@ -538,23 +610,35 @@ function tokenOf(a: PoolAccount): string | undefined {
   return a.access ?? a.apiKey
 }
 
-/** Pool accounts plus ephemeral env accounts, deduped by token. */
+/** Pool accounts plus ephemeral env accounts, deduped by user then token.
+ * Same Cline user with two sessions shares one daily quota, so only the
+ * freshest entry per user is a rotation candidate. */
 function allCandidates(pool: PoolFile): PoolAccount[] {
-  const seen = new Set<string>()
+  const sorted = [...pool.accounts].sort((a, b) => freshnessOf(b) - freshnessOf(a))
+  const seenToken = new Set<string>()
+  const seenUser = new Set<string>()
   const out: PoolAccount[] = []
-  for (const a of pool.accounts) {
+  for (const a of sorted) {
     const t = tokenOf(a)
     if (!t) continue
-    const key = stripWorkOSPrefix(t)
-    if (seen.has(key)) continue
-    seen.add(key)
+    const tkey = stripWorkOSPrefix(t)
+    if (seenToken.has(tkey)) continue
+    const ukey = clineUserKey(t) ?? (accountEmail(a) ? `email:${accountEmail(a)}` : undefined)
+    if (ukey) {
+      if (seenUser.has(ukey)) continue
+      seenUser.add(ukey)
+    }
+    seenToken.add(tkey)
     out.push(a)
   }
   const envKeys = collectEnvKeys()
   envKeys.forEach((key, i) => {
     const k = stripWorkOSPrefix(key)
-    if (seen.has(k)) return
-    seen.add(k)
+    if (seenToken.has(k)) return
+    const ukey = clineUserKey(key) ?? (normalizeEmailLabel(key) ? `email:${normalizeEmailLabel(key)}` : undefined)
+    if (ukey && seenUser.has(ukey)) return
+    if (ukey) seenUser.add(ukey)
+    seenToken.add(k)
     const fp = `${k.slice(0, 4)}${k.slice(-4)}${k.length}`
     out.push({
       id: `env-${fp}`,
@@ -565,6 +649,89 @@ function allCandidates(pool: PoolFile): PoolAccount[] {
     })
   })
   return out
+}
+
+/** Collapse stored duplicates (same Cline user, different session tokens).
+ * Keeps the freshest entry per user/email, drops the rest. Returns true
+ * when anything was removed. Also repairs activeId. */
+function dedupePool(pool: PoolFile): boolean {
+  const bestByUser = new Map<string, PoolAccount>()
+  const bestByEmail = new Map<string, PoolAccount>()
+  for (const a of pool.accounts) {
+    const t = tokenOf(a)
+    if (!t) continue
+    const ukey = clineUserKey(t)
+    if (ukey) {
+      const cur = bestByUser.get(ukey)
+      if (!cur || freshnessOf(a) > freshnessOf(cur)) bestByUser.set(ukey, a)
+      continue
+    }
+    const email = accountEmail(a)
+    if (email) {
+      const cur = bestByEmail.get(email)
+      if (!cur || freshnessOf(a) > freshnessOf(cur)) bestByEmail.set(email, a)
+    }
+  }
+  if (bestByUser.size === 0 && bestByEmail.size === 0) return false
+  const keep = new Set<string>()
+  for (const a of bestByUser.values()) keep.add(a.id)
+  for (const a of bestByEmail.values()) {
+    // Don't let a generic email fallback rescue an entry that already lost
+    // its user group — only keep it if no user-keyed entry claims that email.
+    const claimed = [...bestByUser.values()].some((u) => accountEmail(u) === a.label?.trim().toLowerCase() || accountEmail(u) === accountEmail(a))
+    if (!claimed) keep.add(a.id)
+  }
+  // Entries with no decodable identity are always kept (can't prove dup).
+  for (const a of pool.accounts) {
+    const t = tokenOf(a)
+    if (!t) {
+      keep.add(a.id)
+      continue
+    }
+    if (!clineUserKey(t) && !accountEmail(a)) keep.add(a.id)
+  }
+  if (keep.size === pool.accounts.length) return false
+  const kept = pool.accounts.filter((a) => keep.has(a.id))
+  const removed = pool.accounts.filter((a) => !keep.has(a.id))
+  pool.accounts = kept
+  if (pool.activeId && !keep.has(pool.activeId)) {
+    // Point active at the surviving sibling of the removed active account.
+    const oldActive = removed.find((a) => a.id === pool.activeId)
+    const oldToken = oldActive ? tokenOf(oldActive) : undefined
+    const siblingKey = oldToken ? clineUserKey(oldToken) : undefined
+    const sibling = siblingKey ? bestByUser.get(siblingKey) : undefined
+    pool.activeId = sibling?.id ?? kept[0]?.id
+    if (!pool.activeId) delete pool.activeId
+  }
+  pool.activeId ??= kept[0]?.id
+  return true
+}
+
+function findOAuthDuplicate(
+  pool: PoolFile,
+  access: string,
+  label?: string,
+): PoolAccount | undefined {
+  const key = stripWorkOSPrefix(access)
+  const byToken = pool.accounts.find((a) => {
+    const t = tokenOf(a)
+    return !!t && stripWorkOSPrefix(t) === key
+  })
+  if (byToken) return byToken
+  const ukey = clineUserKey(access)
+  if (ukey) {
+    const byUser = pool.accounts.find((a) => {
+      const t = tokenOf(a)
+      return !!t && clineUserKey(t) === ukey
+    })
+    if (byUser) return byUser
+  }
+  const email = normalizeEmailLabel(label) ?? payloadEmail(access)
+  if (email) {
+    const byEmail = pool.accounts.find((a) => accountEmail(a) === email)
+    if (byEmail) return byEmail
+  }
+  return undefined
 }
 
 function findByToken(pool: PoolFile, token: string): PoolAccount | undefined {
@@ -603,56 +770,66 @@ function upsertOAuthAccount(
   label?: string,
   source: AccountSource = "oauth",
 ): PoolAccount {
-  const key = stripWorkOSPrefix(creds.access)
-  let acc = pool.accounts.find((a) => {
-    const t = tokenOf(a)
-    return !!t && stripWorkOSPrefix(t) === key
-  })
+  const acc = findOAuthDuplicate(pool, creds.access, label)
   if (acc) {
     acc.access = stripWorkOSPrefix(creds.access)
     acc.refresh = creds.refresh
     acc.expires = creds.expires
+    // Prefer a real email label over generic ones (cline-1, connect-token…).
+    const emailLabel = normalizeEmailLabel(label)
+    if (emailLabel) acc.label = emailLabel
+    else if (isGenericLabel(acc.label)) {
+      const fromToken = payloadEmail(creds.access)
+      if (fromToken) acc.label = fromToken
+      else if (label?.trim()) acc.label = label.trim()
+    }
     delete acc.limitedUntil
     delete acc.lastError
-  } else {
-    acc = {
-      id: newAccountId(),
-      label: label ?? `cline-${pool.accounts.length + 1}`,
-      access: stripWorkOSPrefix(creds.access),
-      refresh: creds.refresh,
-      expires: creds.expires,
-      source,
-      addedAt: Date.now(),
-    }
-    pool.accounts.push(acc)
+    dedupePool(pool)
+    pool.activeId ??= acc.id
+    return acc
   }
-  pool.activeId ??= acc.id
-  return acc
+  const emailFromToken = payloadEmail(creds.access)
+  const fresh: PoolAccount = {
+    id: newAccountId(),
+    label: normalizeEmailLabel(label) ?? emailFromToken ?? label?.trim() ?? `cline-${pool.accounts.length + 1}`,
+    access: stripWorkOSPrefix(creds.access),
+    refresh: creds.refresh,
+    expires: creds.expires,
+    source,
+    addedAt: Date.now(),
+  }
+  pool.accounts.push(fresh)
+  dedupePool(pool)
+  pool.activeId ??= fresh.id
+  return pool.accounts.find((a) => a.id === fresh.id) ?? fresh
 }
 
 function upsertApiAccount(pool: PoolFile, key: string, label?: string, source: AccountSource = "api"): PoolAccount {
-  const k = stripWorkOSPrefix(key.trim())
-  let acc = pool.accounts.find((a) => {
-    const t = tokenOf(a)
-    return !!t && stripWorkOSPrefix(t) === k
-  })
+  const acc = findOAuthDuplicate(pool, key, label)
   if (acc) {
-    if (acc.access) acc.access = k
+    if (acc.access) acc.access = stripWorkOSPrefix(key.trim())
     else acc.apiKey = key.trim()
+    const emailLabel = normalizeEmailLabel(label)
+    if (emailLabel) acc.label = emailLabel
+    else if (isGenericLabel(acc.label) && label?.trim()) acc.label = label.trim()
     delete acc.limitedUntil
     delete acc.lastError
-  } else {
-    acc = {
-      id: newAccountId(),
-      label: label ?? `token-${maskToken(k)}`,
-      apiKey: key.trim(),
-      source,
-      addedAt: Date.now(),
-    }
-    pool.accounts.push(acc)
+    dedupePool(pool)
+    pool.activeId ??= acc.id
+    return acc
   }
-  pool.activeId ??= acc.id
-  return acc
+  const fresh: PoolAccount = {
+    id: newAccountId(),
+    label: normalizeEmailLabel(label) ?? label?.trim() ?? `token-${maskToken(stripWorkOSPrefix(key.trim()))}`,
+    apiKey: key.trim(),
+    source,
+    addedAt: Date.now(),
+  }
+  pool.accounts.push(fresh)
+  dedupePool(pool)
+  pool.activeId ??= fresh.id
+  return pool.accounts.find((a) => a.id === fresh.id) ?? fresh
 }
 
 // In-memory rotation cursor (round-robin across healthy accounts).
@@ -885,7 +1062,12 @@ const ClineFreePlugin: Plugin = async ({ client }) => {
   // Account pool: single source of truth for rotation. Seeded from the
   // pool file; env keys + native OpenCode auth merge in per request.
   const pool = await loadPoolFile()
-  if (pruneLimits(pool)) void savePoolFile(pool).catch(() => {})
+  {
+    const pruned = pruneLimits(pool)
+    const deduped = dedupePool(pool)
+    if (pruned || deduped) void savePoolFile(pool).catch(() => {})
+    if (deduped) log("info", `cline-free: removed duplicate login(s) — ${pool.accounts.length} unique account(s) left`)
+  }
   installFetchRouter(pool, log)
 
   // Fetch once at startup so /models shows the current rotation.
@@ -940,32 +1122,39 @@ const ClineFreePlugin: Plugin = async ({ client }) => {
       provider: PROVIDER_ID,
       loader: async (getAuth: () => Promise<any>, provider: any) => {
         const baseHeaders = { "X-CLIENT-TYPE": "opencode" }
-        pruneLimits(pool)
+        if (pruneLimits(pool) || dedupePool(pool)) void savePoolFile(pool).catch(() => {})
         const auth = await getAuth().catch(() => undefined)
 
-        // Merge the native single Auth into the pool (append, never
-        // replace) so repeated `/connect` calls accumulate accounts.
+        // Merge the native single Auth into the pool (update in place when
+        // the same Cline user logs in again, append only for new users) so
+        // repeated `/connect` calls accumulate UNIQUE accounts.
         if (auth?.type === "api" && typeof auth.key === "string" && auth.key.trim()) {
-          const before = pool.accounts.length
-          upsertApiAccount(pool, String(auth.key), "connect-token")
-          if (pool.accounts.length !== before) void savePoolFile(pool).catch(() => {})
+          const snapshot = JSON.stringify(pool.accounts)
+          upsertApiAccount(pool, String(auth.key), undefined)
+          if (JSON.stringify(pool.accounts) !== snapshot) void savePoolFile(pool).catch(() => {})
         } else if (auth?.type === "oauth" && typeof auth.access === "string") {
-          const before = pool.accounts.length
+          const snapshot = JSON.stringify(pool.accounts)
           const acc = upsertOAuthAccount(
             pool,
             { access: String(auth.access), refresh: String(auth.refresh ?? ""), expires: Number(auth.expires ?? 0) },
             typeof auth.accountId === "string" ? auth.accountId : undefined,
           )
           // Backfill a friendly label once per new account.
-          if (pool.accounts.length !== before && (!acc.label || acc.label === auth.accountId)) {
-            void fetchUserEmail(String(auth.access)).then((email) => {
-              if (email) {
-                acc.label = email
-                void savePoolFile(pool).catch(() => {})
-              }
-            })
+          if ((!acc.label || acc.label === auth.accountId) && isGenericLabel(acc.label)) {
+            const knownEmail = normalizeEmailLabel(typeof auth.accountId === "string" ? auth.accountId : undefined) ?? payloadEmail(String(auth.access))
+            if (knownEmail) {
+              acc.label = knownEmail
+              void savePoolFile(pool).catch(() => {})
+            } else {
+              void fetchUserEmail(String(auth.access)).then((email) => {
+                if (email) {
+                  acc.label = email
+                  void savePoolFile(pool).catch(() => {})
+                }
+              })
+            }
           }
-          if (pool.accounts.length !== before) void savePoolFile(pool).catch(() => {})
+          if (JSON.stringify(pool.accounts) !== snapshot) void savePoolFile(pool).catch(() => {})
         }
 
         const picked = selectAccount(pool, Date.now())
@@ -1142,6 +1331,7 @@ const ClineFreePlugin: Plugin = async ({ client }) => {
         args: {},
         async execute() {
           pruneLimits(pool)
+          if (dedupePool(pool)) void savePoolFile(pool).catch(() => {})
           const candidates = allCandidates(pool)
           const now = Date.now()
           const lines = candidates.map((a) => {
