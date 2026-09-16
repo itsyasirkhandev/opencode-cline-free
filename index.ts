@@ -190,23 +190,136 @@ async function fetchFreeModels(timeoutMs = 12_000): Promise<FreeEntry[]> {
 
 // --- Cline OAuth (WorkOS device-code flow, same as Pi's pi-cline) ---
 
-async function readError(res: Response): Promise<string> {
-  const text = await res.text().catch(() => "")
-  if (!text) return `${res.status} ${res.statusText}`
+// --- Production-grade auth plumbing (RFC 9700 §4.13, RFC 8628 §3.5) ---
+//
+// * Every token-endpoint call has a timeout: a hung socket must never hang
+//   /connect or a model request forever.
+// * Failures are classified terminal (retrying with the same credentials is
+//   pointless — user must re-login) vs transient (the same request will
+//   likely succeed on retry). Only invalid_* OAuth codes and other 4xx are
+//   terminal; network errors, timeouts, 408/429/5xx and malformed-200
+//   bodies are transient and retried with exponential backoff + jitter.
+
+const AUTH_TIMEOUT_MS = 15_000
+const TRANSIENT_MAX_ATTEMPTS = 4 // initial try + 3 retries
+const TRANSIENT_BACKOFF_MS = [300, 800, 2000]
+
+class TerminalAuthError extends Error {
+  readonly kind = "terminal" as const
+}
+
+class TransientAuthError extends Error {
+  readonly kind = "transient" as const
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms))
+}
+
+function isAbortError(e: unknown): boolean {
+  return (
+    (typeof DOMException !== "undefined" && e instanceof DOMException && e.name === "AbortError") ||
+    (typeof e === "object" && e !== null && (e as { name?: unknown }).name === "AbortError")
+  )
+}
+
+/** fetch with a timeout. Timeouts surface as TransientAuthError; an
+ * outer-signal abort rethrows the caller's reason. */
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit & { timeoutMs?: number } = {},
+): Promise<Response> {
+  const { timeoutMs = AUTH_TIMEOUT_MS, signal: outer, ...rest } = init
+  const ctrl = new AbortController()
+  let timedOut = false
+  const timer = setTimeout(() => {
+    timedOut = true
+    ctrl.abort()
+  }, timeoutMs)
+  const onOuterAbort = () => ctrl.abort()
+  if (outer) {
+    if (outer.aborted) {
+      clearTimeout(timer)
+      throw (outer as AbortSignal).reason ?? new DOMException("Aborted", "AbortError")
+    }
+    outer.addEventListener("abort", onOuterAbort, { once: true })
+  }
   try {
-    const j = JSON.parse(text) as { error_description?: string; message?: string; error?: string }
-    return j.error_description ?? j.message ?? j.error ?? text
-  } catch {
-    return text
+    return await fetch(url, { ...rest, signal: ctrl.signal })
+  } catch (e) {
+    if (timedOut) throw new TransientAuthError(`request timed out after ${timeoutMs}ms: ${url}`)
+    throw e
+  } finally {
+    clearTimeout(timer)
+    outer?.removeEventListener("abort", onOuterAbort)
   }
 }
 
+/** Best-effort OAuth error code from a parsed body ({error: "invalid_grant"}). */
+function parseOAuthErrorCode(body: unknown): string | undefined {
+  if (typeof body === "object" && body !== null) {
+    const code = (body as { error?: unknown }).error
+    if (typeof code === "string" && code) return code.toLowerCase()
+  }
+  return undefined
+}
+
+function classifyHttpFailure(
+  status: number | undefined,
+  code: string | undefined,
+  where: string,
+  detail?: string,
+): TerminalAuthError | TransientAuthError {
+  const extra = detail ? `: ${detail}` : ""
+  if (code === "invalid_grant" || code === "invalid_client" || code === "unauthorized_client") {
+    return new TerminalAuthError(`${where}: ${code}${extra} — re-login required (/connect → cline-free)`)
+  }
+  if (status === 408 || status === 429 || (status !== undefined && status >= 500)) {
+    return new TransientAuthError(`${where}: HTTP ${status}${code ? ` (${code})` : ""}${extra}`)
+  }
+  if (status !== undefined && status >= 400) {
+    return new TerminalAuthError(`${where}: HTTP ${status}${code ? ` (${code})` : ""}${extra} — retrying is unlikely to help`)
+  }
+  return new TransientAuthError(`${where}${extra}`)
+}
+
+/** Run fn, retrying transient failures with backoff. Terminal errors throw immediately. */
+async function withTransientRetries<T>(
+  fn: () => Promise<T>,
+  opts: { attempts?: number; label?: string; log?: Logger } = {},
+): Promise<T> {
+  const attempts = opts.attempts ?? TRANSIENT_MAX_ATTEMPTS
+  let last: unknown
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      return await fn()
+    } catch (e) {
+      if (e instanceof TerminalAuthError) throw e
+      last = e
+      if (attempt === attempts - 1) break
+      const wait =
+        TRANSIENT_BACKOFF_MS[Math.min(attempt, TRANSIENT_BACKOFF_MS.length - 1)] + Math.random() * 250
+      opts.log?.(
+        "warn",
+        `cline-free: attempt ${attempt + 1}/${attempts} failed${opts.label ? ` for ${opts.label}` : ""} (${e instanceof Error ? e.message : String(e)}) — retrying in ${Math.round(wait)}ms`,
+      )
+      await sleep(wait)
+    }
+  }
+  if (last instanceof TerminalAuthError) throw last
+  throw last instanceof Error ? last : new TransientAuthError(`operation failed: ${String(last)}`)
+}
+
 async function startDeviceAuth() {
-  const res = await fetch(`${WORKOS_API}/user_management/authorize/device`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
-    body: new URLSearchParams({ client_id: WORKOS_CLIENT_ID }),
-  })
+  const res = await withTransientRetries(
+    () =>
+      fetchWithTimeout(`${WORKOS_API}/user_management/authorize/device`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+        body: new URLSearchParams({ client_id: WORKOS_CLIENT_ID }),
+      }),
+    { attempts: 2, label: "device authorization" },
+  )
   const data = (await res.json().catch(() => ({}))) as {
     device_code?: string
     user_code?: string
@@ -218,7 +331,12 @@ async function startDeviceAuth() {
     error_description?: string
   }
   if (!res.ok || !data.device_code || !data.user_code || !data.verification_uri) {
-    throw new Error(`Cline device authorization failed: ${data.error_description ?? data.error ?? res.statusText}`)
+    throw classifyHttpFailure(
+      res.ok ? undefined : res.status,
+      parseOAuthErrorCode(data),
+      "Cline device authorization",
+      data.error_description ?? (typeof data.error === "string" ? data.error : undefined) ?? res.statusText,
+    )
   }
   return {
     deviceCode: data.device_code,
@@ -231,18 +349,28 @@ async function startDeviceAuth() {
 }
 
 async function pollDeviceAuth(deviceCode: string, expiresInSeconds: number, intervalSeconds: number) {
-  const deadline = Date.now() + expiresInSeconds * 1000
+  // Stop polling slightly before the code dies — never fire a doomed last poll.
+  const deadline = Date.now() + Math.max(30, expiresInSeconds - 10) * 1000
   let interval = Math.max(1, intervalSeconds)
   while (Date.now() <= deadline) {
-    const res = await fetch(`${WORKOS_API}/user_management/authenticate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
-      body: new URLSearchParams({
-        grant_type: "urn:ietf:params:oauth:grant-type:device_code",
-        device_code: deviceCode,
-        client_id: WORKOS_CLIENT_ID,
-      }),
-    })
+    let res: Response
+    try {
+      res = await fetchWithTimeout(`${WORKOS_API}/user_management/authenticate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+        body: new URLSearchParams({
+          grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+          device_code: deviceCode,
+          client_id: WORKOS_CLIENT_ID,
+        }),
+      })
+    } catch (e) {
+      if (isAbortError(e)) throw e
+      // Transient blip on one poll must not kill the whole flow — wait out
+      // this interval and try again (bounded by the deadline above).
+      await new Promise((r) => setTimeout(r, interval * 1000))
+      continue
+    }
     const data = (await res.json().catch(() => ({}))) as {
       access_token?: string
       refresh_token?: string
@@ -257,56 +385,127 @@ async function pollDeviceAuth(deviceCode: string, expiresInSeconds: number, inte
       continue
     }
     if (data.error === "slow_down") {
-      interval += 1
+      interval += 5
       await new Promise((r) => setTimeout(r, interval * 1000))
       continue
     }
-    throw new Error(`Cline device authorization failed: ${data.error_description ?? data.error ?? res.statusText}`)
+    if (data.error === "access_denied") {
+      throw new TerminalAuthError("Cline device authorization denied in the browser — run /connect again and approve the prompt.")
+    }
+    if (data.error === "expired_token") {
+      throw new TerminalAuthError("Cline device code expired before approval — run /connect again for a fresh code.")
+    }
+    throw new TerminalAuthError(`Cline device authorization failed: ${data.error_description ?? data.error ?? res.statusText}`)
   }
   throw new Error("Cline device authorization timed out — run /connect again and approve the browser prompt.")
 }
 
 async function registerWorkOSTokens(tokens: { accessToken: string; refreshToken: string }) {
-  const res = await fetch(`${API_BASE}/api/v1/auth/register`, {
-    method: "POST",
-    headers: { Accept: "application/json", "Content-Type": "application/json" },
-    body: JSON.stringify(tokens),
-  })
-  if (!res.ok) throw new Error(`Cline token registration failed: ${await readError(res)}`)
-  const payload = (await res.json()) as {
-    success?: boolean
-    data?: { accessToken?: string; refreshToken?: string; expiresAt?: string }
-  }
-  const data = payload.data
-  if (!payload.success || !data?.accessToken || !data?.expiresAt) {
-    throw new Error("Invalid token response from Cline")
-  }
-  const expires = Date.parse(data.expiresAt)
-  if (Number.isNaN(expires)) throw new Error(`Invalid token expiration from Cline: ${data.expiresAt}`)
-  return {
-    access: data.accessToken,
-    refresh: data.refreshToken ?? tokens.refreshToken,
-    expires: expires - REFRESH_BUFFER_MS,
-  }
+  return withTransientRetries(
+    async () => {
+      const res = await fetchWithTimeout(`${API_BASE}/api/v1/auth/register`, {
+        method: "POST",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify(tokens),
+      })
+      if (!res.ok) {
+        const text = await res.text().catch(() => "")
+        let code: string | undefined
+        let detail = `${res.status} ${res.statusText}`
+        if (text) {
+          try {
+            const j = JSON.parse(text) as { error_description?: string; message?: string; error?: string }
+            code = typeof j.error === "string" ? j.error.toLowerCase() : undefined
+            detail = (j.error_description ?? j.message ?? j.error ?? text).slice(0, 200)
+          } catch {
+            detail = text.slice(0, 200)
+          }
+        }
+        throw classifyHttpFailure(res.status, code, "Cline token registration", detail)
+      }
+      const payload = (await res.json()) as {
+        success?: boolean
+        data?: { accessToken?: string; refreshToken?: string; expiresAt?: string }
+      }
+      const data = payload.data
+      if (!payload.success || !data?.accessToken || !data?.expiresAt) {
+        throw new TransientAuthError("Invalid token response from Cline")
+      }
+      const expires = Date.parse(data.expiresAt)
+      if (Number.isNaN(expires)) throw new TransientAuthError(`Invalid token expiration from Cline: ${data.expiresAt}`)
+      return {
+        access: data.accessToken,
+        refresh: data.refreshToken ?? tokens.refreshToken,
+        expires: expires - REFRESH_BUFFER_MS,
+      }
+    },
+    { attempts: 3, label: "token registration" },
+  )
 }
 
-async function refreshClineToken(refresh: string) {  const res = await fetch(`${API_BASE}/api/v1/auth/refresh`, {
-    method: "POST",
-    headers: { Accept: "application/json", "Content-Type": "application/json" },
-    body: JSON.stringify({ refreshToken: refresh, grantType: "refresh_token" }),
-  })
-  if (!res.ok) throw new Error(`Cline token refresh failed: ${await readError(res)}`)
+type RefreshResult = { access: string; refresh: string; expires: number }
+
+/** Single refresh attempt. Throws TerminalAuthError (re-login required,
+ * do not retry) or TransientAuthError (same refresh token is safe to
+ * retry — rotation grace windows tolerate this). */
+async function refreshClineTokenOnce(
+  refresh: string,
+  post: (url: string, init: RequestInit) => Promise<Response> = (url, init) => fetchWithTimeout(url, init),
+): Promise<RefreshResult> {
+  let res: Response
+  try {
+    res = await post(`${API_BASE}/api/v1/auth/refresh`, {
+      method: "POST",
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify({ refreshToken: refresh, grantType: "refresh_token" }),
+    })
+  } catch (e) {
+    if (e instanceof TerminalAuthError) throw e
+    if (isAbortError(e)) throw e
+    throw new TransientAuthError(`Cline token refresh failed: ${e instanceof Error ? e.message : String(e)}`)
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => "")
+    let code: string | undefined
+    let detail = `${res.status} ${res.statusText}`
+    if (text) {
+      try {
+        const j = JSON.parse(text) as { error_description?: string; message?: string; error?: string }
+        code = typeof j.error === "string" ? j.error.toLowerCase() : undefined
+        detail = (j.error_description ?? j.message ?? j.error ?? text).slice(0, 200)
+      } catch {
+        detail = text.slice(0, 200)
+      }
+    }
+    throw classifyHttpFailure(res.status, code, "Cline token refresh", detail)
+  }
   const payload = (await res.json()) as {
     success?: boolean
     data?: { accessToken?: string; refreshToken?: string; expiresAt?: string }
   }
   const data = payload.data
   if (!payload.success || !data?.accessToken || !data?.expiresAt) {
-    throw new Error("Invalid refresh response from Cline")
+    throw new TransientAuthError("Invalid refresh response from Cline")
   }
   const expires = Date.parse(data.expiresAt)
-  if (Number.isNaN(expires)) throw new Error("Invalid token expiration from Cline")
+  if (Number.isNaN(expires)) throw new TransientAuthError("Invalid token expiration from Cline")
   return { access: data.accessToken, refresh: data.refreshToken ?? refresh, expires: expires - REFRESH_BUFFER_MS }
+}
+
+/** Refresh with bounded retries on transient failures. Terminal errors
+ * (invalid_grant et al.) throw immediately — the account needs re-login. */
+async function refreshClineToken(
+  refresh: string,
+  opts: {
+    label?: string
+    log?: Logger
+    post?: (url: string, init: RequestInit) => Promise<Response>
+  } = {},
+): Promise<RefreshResult> {
+  return withTransientRetries(() => refreshClineTokenOnce(refresh, opts.post), {
+    label: opts.label ? `token refresh for ${opts.label}` : "token refresh",
+    log: opts.log,
+  })
 }
 
 // --- Reuse an existing Cline CLI login on this machine ---
@@ -383,7 +582,7 @@ async function readClineCliSession(): Promise<
 
 async function validateClineToken(accessToken: string): Promise<boolean> {
   try {
-    const res = await fetch(`${API_BASE}/api/v1/users/me`, {
+    const res = await fetchWithTimeout(`${API_BASE}/api/v1/users/me`, {
       headers: { Authorization: `Bearer ${withWorkOSPrefix(accessToken)}`, Accept: "application/json" },
     })
     return res.ok
@@ -416,6 +615,11 @@ type PoolAccount = {
   limitedUntil?: number
   lastUsed?: number
   lastError?: string
+  /** Terminal auth failure (e.g. invalid_grant): excluded from rotation
+   * until re-login clears it or a validation probe recovers it. */
+  authFailedAt?: number
+  authFailedReason?: string
+  lastProbeAt?: number
 }
 
 type PoolFile = { version: 1; activeId?: string; accounts: PoolAccount[] }
@@ -437,6 +641,14 @@ function stripWorkOSPrefix(token: string): string {
 
 function sameToken(a: string, b: string): boolean {
   return stripWorkOSPrefix(a) === stripWorkOSPrefix(b)
+}
+
+/** Same Cline user (stable identity), even across token rotations. */
+function sameAccount(a: string, b: string): boolean {
+  const ka = clineUserKey(a)
+  const kb = clineUserKey(b)
+  if (ka && kb) return ka === kb
+  return sameToken(a, b)
 }
 
 // --- Stable Cline user identity (dedupe key) ---
@@ -566,12 +778,62 @@ async function loadPoolFile(): Promise<PoolFile> {
 }
 
 async function savePoolFile(pool: PoolFile): Promise<void> {
-  const { mkdir, writeFile, chmod } = await import("node:fs/promises")
+  // Atomic write (tmp + rename): a crash mid-write can never leave a
+  // half-written pool file behind. Per-save metadata races across processes
+  // (lastUsed etc.) resolve last-writer-wins, which is acceptable; token
+  // updates converge via peer-adoption inside refreshAccount's file lock.
+  const { mkdir, writeFile, chmod, rename, unlink } = await import("node:fs/promises")
   const { dirname } = await import("node:path")
   const file = poolFilePath()
   await mkdir(dirname(file), { recursive: true })
-  await writeFile(file, JSON.stringify(pool, null, 2), { mode: 0o600 })
-  await chmod(file, 0o600).catch(() => {})
+  const tmp = `${file}.tmp.${process.pid}.${Date.now()}`
+  try {
+    await writeFile(tmp, JSON.stringify(pool, null, 2), { mode: 0o600 })
+    await chmod(tmp, 0o600).catch(() => {})
+    await rename(tmp, file)
+  } catch (e) {
+    await unlink(tmp).catch(() => {})
+    throw e
+  }
+}
+
+/** Cross-process mutex around refresh critical sections (lockfile with
+ * stale-lock breaking). Prevents two opencode instances from refreshing
+ * the same account concurrently and tripping reuse detection. */
+async function withFileLock<T>(fn: () => Promise<T>, opts: { timeoutMs?: number; staleMs?: number } = {}): Promise<T> {
+  const { open, unlink, stat } = await import("node:fs/promises")
+  const lock = `${poolFilePath()}.lock`
+  const timeoutMs = opts.timeoutMs ?? 5000
+  const staleMs = opts.staleMs ?? 15000
+  const start = Date.now()
+  while (true) {
+    try {
+      const fh = await open(lock, "wx", 0o600)
+      await fh.writeFile(`${process.pid}`).catch(() => {})
+      await fh.close().catch(() => {})
+      break
+    } catch (e: unknown) {
+      if ((e as { code?: string })?.code !== "EEXIST") throw e
+      try {
+        const st = await stat(lock)
+        if (Date.now() - st.mtimeMs > staleMs) {
+          await unlink(lock).catch(() => {})
+          continue
+        }
+      } catch {
+        continue // lock vanished between open and stat; retry
+      }
+      if (Date.now() - start > timeoutMs) {
+        throw new TransientAuthError(`timed out waiting for pool lock (${lock})`)
+      }
+      await sleep(50 + Math.random() * 100)
+    }
+  }
+  try {
+    return await fn()
+  } finally {
+    await unlink(lock).catch(() => {})
+  }
 }
 
 function pruneLimits(pool: PoolFile, now = Date.now()): boolean {
@@ -621,6 +883,9 @@ function allCandidates(pool: PoolFile): PoolAccount[] {
   for (const a of sorted) {
     const t = tokenOf(a)
     if (!t) continue
+    // Quarantined accounts (terminal auth failure) stay out of rotation
+    // until re-login or a successful validation probe.
+    if (a.authFailedAt) continue
     const tkey = stripWorkOSPrefix(t)
     if (seenToken.has(tkey)) continue
     const ukey = clineUserKey(t) ?? (accountEmail(a) ? `email:${accountEmail(a)}` : undefined)
@@ -749,7 +1014,7 @@ function findByToken(pool: PoolFile, token: string): PoolAccount | undefined {
 
 async function fetchUserEmail(accessToken: string): Promise<string | undefined> {
   try {
-    const res = await fetch(`${API_BASE}/api/v1/users/me`, {
+    const res = await fetchWithTimeout(`${API_BASE}/api/v1/users/me`, {
       headers: { Authorization: `Bearer ${withWorkOSPrefix(accessToken)}`, Accept: "application/json" },
     })
     if (!res.ok) return undefined
@@ -763,6 +1028,16 @@ async function fetchUserEmail(accessToken: string): Promise<string | undefined> 
 }
 
 type Logger = (level: "info" | "warn" | "error", message: string, extra?: Record<string, unknown>) => void
+
+/** Clear all health state: cooldowns, errors, and auth quarantine.
+ * Called whenever fresh credentials land for an account. */
+function clearAuthHealth(acc: PoolAccount): void {
+  delete acc.limitedUntil
+  delete acc.lastError
+  delete acc.authFailedAt
+  delete acc.authFailedReason
+  delete acc.lastProbeAt
+}
 
 function upsertOAuthAccount(
   pool: PoolFile,
@@ -783,8 +1058,7 @@ function upsertOAuthAccount(
       if (fromToken) acc.label = fromToken
       else if (label?.trim()) acc.label = label.trim()
     }
-    delete acc.limitedUntil
-    delete acc.lastError
+    clearAuthHealth(acc)
     dedupePool(pool)
     pool.activeId ??= acc.id
     return acc
@@ -813,8 +1087,7 @@ function upsertApiAccount(pool: PoolFile, key: string, label?: string, source: A
     const emailLabel = normalizeEmailLabel(label)
     if (emailLabel) acc.label = emailLabel
     else if (isGenericLabel(acc.label) && label?.trim()) acc.label = label.trim()
-    delete acc.limitedUntil
-    delete acc.lastError
+    clearAuthHealth(acc)
     dedupePool(pool)
     pool.activeId ??= acc.id
     return acc
@@ -830,6 +1103,108 @@ function upsertApiAccount(pool: PoolFile, key: string, label?: string, source: A
   dedupePool(pool)
   pool.activeId ??= fresh.id
   return pool.accounts.find((a) => a.id === fresh.id) ?? fresh
+}
+
+// In-flight refreshes keyed by account id (single-flight): concurrent
+// requests share ONE refresh instead of each firing its own. Without this,
+// rotation + reuse detection on the server side sees a replayed refresh
+// token and can revoke the session (invalid_grant lockout caused by us).
+const refreshFlight = new Map<string, Promise<void>>()
+
+/** Ensure acc has fresh tokens. Joins an in-flight refresh when one exists,
+ * adopts a peer process's newer tokens under the file lock when available,
+ * and otherwise refreshes (with retry) and persists atomically.
+ * Throws TerminalAuthError (re-login required) or TransientAuthError. */
+async function refreshAccount(pool: PoolFile, acc: PoolAccount, log: Logger): Promise<void> {
+  const inflight = refreshFlight.get(acc.id)
+  if (inflight) {
+    await inflight
+    return
+  }
+  const p = (async (): Promise<void> => {
+    const refreshToken = acc.refresh
+    if (!refreshToken) {
+      throw new TerminalAuthError(`account ${acc.label ?? acc.id} has no refresh token — re-login required (/connect → cline-free)`)
+    }
+    await withFileLock(async () => {
+      // A peer process may have refreshed while we waited for the lock:
+      // adopt its tokens instead of replaying our (now stale) refresh token.
+      const disk = await loadPoolFile()
+      const peer = disk.accounts.find((a) => a.id === acc.id)
+      const peerTok = peer ? tokenOf(peer) : undefined
+      const mine = tokenOf(acc)
+      if (
+        peer?.refresh && peer?.expires && peer.expires - Date.now() >= REFRESH_BUFFER_MS &&
+        peerTok && mine && stripWorkOSPrefix(peerTok) !== stripWorkOSPrefix(mine)
+      ) {
+        acc.access = peer.access
+        acc.apiKey = peer.apiKey
+        acc.refresh = peer.refresh
+        acc.expires = peer.expires
+        clearAuthHealth(acc)
+        log("info", `cline-free: adopted peer-refreshed tokens for ${acc.label ?? acc.id}`)
+        return
+      }
+      const next = await refreshClineToken(refreshToken, { label: acc.label ?? acc.id, log })
+      acc.access = next.access
+      acc.refresh = next.refresh
+      acc.expires = next.expires
+      clearAuthHealth(acc)
+      await savePoolFile(pool)
+    })
+  })()
+  refreshFlight.set(acc.id, p)
+  try {
+    await p
+  } finally {
+    refreshFlight.delete(acc.id)
+  }
+}
+
+/** Park an account after a terminal auth failure. It leaves rotation
+ * immediately; re-login (upsert) or a successful validation probe clears it. */
+function quarantineAccount(pool: PoolFile, acc: PoolAccount, reason: string, log: Logger): void {
+  acc.authFailedAt = Date.now()
+  acc.authFailedReason = reason
+  delete acc.limitedUntil
+  void savePoolFile(pool).catch(() => {})
+  log(
+    "error",
+    `cline-free: account ${acc.label ?? acc.id} needs re-login (${reason}). Run /connect → cline-free and log in again; rotation continues on the remaining accounts.`,
+    { accountId: acc.id },
+  )
+}
+
+const PROBE_INTERVAL_MS = 15 * 60 * 1000
+
+/** Self-healing for quarantines (covers misclassification): at most every
+ * 15 min per account, re-validate a quarantined account whose stored access
+ * token still looks usable. A pass returns it to rotation. */
+async function probeQuarantinedAccounts(pool: PoolFile, log: Logger): Promise<void> {
+  const now = Date.now()
+  let changed = false
+  for (const acc of pool.accounts) {
+    if (!acc.authFailedAt) continue
+    if (acc.lastProbeAt && now - acc.lastProbeAt < PROBE_INTERVAL_MS) continue
+    acc.lastProbeAt = now
+    changed = true
+    const t = tokenOf(acc)
+    if (t && (!acc.expires || acc.expires - now > 0)) {
+      try {
+        if (await validateClineToken(t)) {
+          delete acc.authFailedAt
+          delete acc.authFailedReason
+          delete acc.lastProbeAt
+          log("info", `cline-free: account ${acc.label ?? acc.id} recovered on probe — back in rotation`, {
+            accountId: acc.id,
+          })
+        }
+      } catch {
+        /* probe failure keeps the quarantine */
+      }
+    }
+  }
+  if (changed) void savePoolFile(pool).catch(() => {})
 }
 
 // In-memory rotation cursor (round-robin across healthy accounts).
@@ -1157,7 +1532,14 @@ const ClineFreePlugin: Plugin = async ({ client }) => {
           if (JSON.stringify(pool.accounts) !== snapshot) void savePoolFile(pool).catch(() => {})
         }
 
-        const picked = selectAccount(pool, Date.now())
+        let picked = selectAccount(pool, Date.now())
+        if (!picked && pool.accounts.some((a) => a.authFailedAt)) {
+          // No healthy account, but quarantined ones exist: give the
+          // recovery probes a chance before reporting exhaustion (lazy, so
+          // the hot path never pays probe latency).
+          await probeQuarantinedAccounts(pool, log)
+          picked = selectAccount(pool, Date.now())
+        }
         if (!picked) {
           const candidates = allCandidates(pool)
           if (candidates.length === 0) return {}
@@ -1172,30 +1554,56 @@ const ClineFreePlugin: Plugin = async ({ client }) => {
         }
 
         // Refresh the picked oauth account if it is about to expire.
-        if (picked.access && picked.refresh && typeof picked.expires === "number" && picked.expires - Date.now() < REFRESH_BUFFER_MS) {
-          try {
-            const next = await refreshClineToken(picked.refresh)
-            picked.access = next.access
-            picked.refresh = next.refresh
-            picked.expires = next.expires
-            delete picked.lastError
+        // Single-flight + persisted: concurrent requests share one refresh,
+        // so rotation on the server never sees a replayed refresh token.
+        const useFallback = (exceptId: string) => {
+          const fb = selectAccount(pool, Date.now())
+          const ft = fb ? tokenOf(fb) : undefined
+          if (fb && ft && fb.id !== exceptId) {
+            pool.activeId = fb.id
+            fb.lastUsed = Date.now()
             void savePoolFile(pool).catch(() => {})
-            // Keep the native single-auth entry fresh only when it is the
-            // same account we just refreshed.
-            if (auth?.type === "oauth" && typeof auth.access === "string" && sameToken(auth.access, next.access)) {
-              await provider?.update?.({ access: next.access, refresh: next.refresh, expires: next.expires }).catch(() => {})
+            return { apiKey: withWorkOSPrefix(ft), baseURL: CHAT_BASE_URL, headers: baseHeaders }
+          }
+          return undefined
+        }
+        const needsRefresh =
+          !!picked.access && typeof picked.expires === "number" && picked.expires - Date.now() < REFRESH_BUFFER_MS
+        if (needsRefresh && !picked.refresh) {
+          // Expired access token with no refresh token: unusable until re-login.
+          quarantineAccount(pool, picked, "access token expired and no refresh token is stored", log)
+          const fb = useFallback(picked.id)
+          if (fb) return fb
+          // No usable fallback: continue with the quarantined token below so
+          // the caller sees the real server response instead of nothing.
+        } else if (needsRefresh) {
+          try {
+            await refreshAccount(pool, picked, log)
+            // Keep the native single-auth entry fresh only when it belongs
+            // to the same Cline user we just refreshed (identity, not token
+            // equality — the token just rotated).
+            const t = tokenOf(picked)
+            if (auth?.type === "oauth" && typeof auth.access === "string" && t && sameAccount(auth.access, t)) {
+              await provider
+                ?.update?.({
+                  access: stripWorkOSPrefix(t),
+                  refresh: picked.refresh,
+                  expires: picked.expires,
+                })
+                .catch(() => {})
             }
           } catch (e) {
-            log("warn", `cline-free: token refresh failed for ${picked.label ?? picked.id}: ${e instanceof Error ? e.message : String(e)} — trying next account`, { accountId: picked.id })
-            picked.lastError = "refresh failed"
-            const fallback = selectAccount(pool, Date.now())
-            const ft = fallback ? tokenOf(fallback) : undefined
-            if (fallback && ft && fallback.id !== picked.id) {
-              pool.activeId = fallback.id
-              fallback.lastUsed = Date.now()
+            if (e instanceof TerminalAuthError) {
+              // Dead credential (invalid_grant et al.): park it so it stops
+              // failing every Nth request; user re-logins via /connect.
+              quarantineAccount(pool, picked, e.message, log)
+            } else {
+              log("warn", `cline-free: token refresh failed for ${picked.label ?? picked.id}: ${e instanceof Error ? e.message : String(e)} — trying next account`, { accountId: picked.id })
+              picked.lastError = "refresh failed"
               void savePoolFile(pool).catch(() => {})
-              return { apiKey: withWorkOSPrefix(ft), baseURL: CHAT_BASE_URL, headers: baseHeaders }
             }
+            const fb = useFallback(picked.id)
+            if (fb) return fb
           }
         }
 
@@ -1233,7 +1641,8 @@ const ClineFreePlugin: Plugin = async ({ client }) => {
                   void savePoolFile(pool).catch(() => {})
                   log("info", `cline-free: added account ${acc.label ?? acc.id} (${pool.accounts.length} total)`, { accountId: acc.id })
                   return { type: "success" as const, ...creds }
-                } catch {
+                } catch (e) {
+                  log("warn", `cline-free: device authorization failed: ${e instanceof Error ? e.message : String(e)}`)
                   return { type: "failed" as const }
                 }
               },
@@ -1263,11 +1672,12 @@ const ClineFreePlugin: Plugin = async ({ client }) => {
                   let { access, refresh, expires } = session
                   if (!(await validateClineToken(access)) && refresh) {
                     try {
-                      const next = await refreshClineToken(refresh)
+                      const next = await refreshClineToken(refresh, { label: session.email ?? "cli-import", log })
                       access = next.access
                       refresh = next.refresh
                       expires = next.expires
-                    } catch {
+                    } catch (e) {
+                      log("warn", `cline-free: CLI-imported token refresh failed: ${e instanceof Error ? e.message : String(e)}`)
                       return { type: "failed" as const }
                     }
                     if (!(await validateClineToken(access))) {
@@ -1306,7 +1716,7 @@ const ClineFreePlugin: Plugin = async ({ client }) => {
             if (!key) return { type: "failed" as const }
             // Quick validation before storing.
             try {
-              const res = await fetch(`${API_BASE}/api/v1/users/me`, {
+              const res = await fetchWithTimeout(`${API_BASE}/api/v1/users/me`, {
                 headers: { Authorization: `Bearer ${withWorkOSPrefix(key)}`, Accept: "application/json" },
               })
               if (!res.ok) return { type: "failed" as const }
@@ -1334,12 +1744,16 @@ const ClineFreePlugin: Plugin = async ({ client }) => {
           if (dedupePool(pool)) void savePoolFile(pool).catch(() => {})
           const candidates = allCandidates(pool)
           const now = Date.now()
-          const lines = candidates.map((a) => {
+          // List STORED accounts (not just rotation candidates) so
+          // quarantined entries stay visible with their NEEDS-RELOGIN flag.
+          const lines = pool.accounts.map((a) => {
             const t = tokenOf(a)
             const limited = a.limitedUntil && a.limitedUntil > now
+            const quarantined = !!a.authFailedAt
             const flags = [
               a.id === pool.activeId ? "active" : "",
               limited ? `COOLDOWN→${new Date(a.limitedUntil!).toISOString()}` : "",
+              quarantined ? `NEEDS-RELOGIN${a.authFailedReason ? ` (${a.authFailedReason.slice(0, 80)})` : ""}` : "",
               a.source,
             ]
               .filter(Boolean)
@@ -1347,7 +1761,9 @@ const ClineFreePlugin: Plugin = async ({ client }) => {
             return `- ${a.label ?? a.id} [${a.id}] (${flags}) token ${t ? maskToken(t) : "?"}` +
               (a.expires ? ` expires ${new Date(a.expires).toISOString()}` : "")
           })
-          const header = `cline-free pool: ${candidates.length} candidate(s) (${pool.accounts.length} stored + ${candidates.length - pool.accounts.length} env). File: ${poolFilePath()}`
+          const envCount = candidates.filter((a) => a.id.startsWith("env-")).length
+          const qCount = pool.accounts.filter((a) => a.authFailedAt).length
+          const header = `cline-free pool: ${pool.accounts.length} stored${qCount ? ` (${qCount} need re-login)` : ""} + ${envCount} env → ${candidates.length} rotation candidate(s). File: ${poolFilePath()}`
           return lines.length > 0 ? `${header}\n${lines.join("\n")}` : `${header}\n(no accounts — run /connect and pick cline-free)`
         },
       }),
@@ -1378,7 +1794,7 @@ const ClineFreePlugin: Plugin = async ({ client }) => {
           const key = args.token?.trim()
           if (!key) return "No token provided."
           try {
-            const res = await fetch(`${API_BASE}/api/v1/users/me`, {
+            const res = await fetchWithTimeout(`${API_BASE}/api/v1/users/me`, {
               headers: { Authorization: `Bearer ${withWorkOSPrefix(key)}`, Accept: "application/json" },
             })
             if (!res.ok) return `Token rejected by Cline (HTTP ${res.status}). Not added.`
@@ -1396,6 +1812,23 @@ const ClineFreePlugin: Plugin = async ({ client }) => {
       }),
     },
   }
+}
+
+// Test seam (no runtime effect on the plugin): lets harness scripts
+// exercise the auth plumbing with a mocked transport.
+export const __clineFreeTest = {
+  TerminalAuthError,
+  TransientAuthError,
+  classifyHttpFailure,
+  parseOAuthErrorCode,
+  refreshClineTokenOnce,
+  refreshClineToken,
+  refreshAccount,
+  quarantineAccount,
+  withTransientRetries,
+  fetchWithTimeout,
+  loadPoolFile,
+  savePoolFile,
 }
 
 export default {

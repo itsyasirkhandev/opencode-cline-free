@@ -140,6 +140,12 @@ npm publish --access public
   (same flow as Pi's `pi-cline` extension) + manual token entry,
   refreshes via `/api/v1/auth/refresh`, and sends
   `Authorization: Bearer workos:...`.
+  Refresh is single-flight per account (concurrent requests share one
+  refresh so rotation is never mistaken for token replay), transient
+  failures retry with backoff while `invalid_grant` quarantines the
+  account for re-login (visible as `NEEDS-RELOGIN` in
+  `cline_free_status`), pool writes are atomic, and every
+  token-endpoint call has a timeout.
 - Free quota is per Cline account and rotating/limited — when Cline rotates,
   restart OpenCode to refresh the list.
 
