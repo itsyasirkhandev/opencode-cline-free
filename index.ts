@@ -1,4 +1,5 @@
 import type { Plugin } from "@opencode-ai/plugin"
+import { tool } from "@opencode-ai/plugin"
 
 /**
  * opencode-cline-free
@@ -29,6 +30,15 @@ const WORKOS_API = "https://api.workos.com"
 const WORKOS_CLIENT_ID = "client_01K3A541FN8TA3EPPHTD2325AR"
 const WORKOS_PREFIX = "workos:"
 const REFRESH_BUFFER_MS = 5 * 60 * 1000
+
+// --- Multi-account pool ---
+// OpenCode stores a single Auth per provider id, so extra Cline accounts
+// live in a plugin-managed pool file next to auth.json
+// (~/.local/share/opencode/cline-free-accounts.json). The loader picks the
+// next healthy account and a fetch wrapper retries the SAME request on a
+// different account when Cline answers 429.
+const ACCOUNTS_FILE_NAME = "cline-free-accounts.json"
+const DAY_MS = 24 * 60 * 60 * 1000
 
 type FreeEntry = { id: string; name?: string; description?: string }
 type RecommendedPayload = {
@@ -382,9 +392,502 @@ async function validateClineToken(accessToken: string): Promise<boolean> {
   }
 }
 
+// --- Multi-account pool + 429 router ---
+//
+// Why a pool file: OpenCode keeps exactly one Auth per provider id, so a
+// second `/connect` would overwrite the first. Every successful login
+// (oauth device flow, CLI import, manual token) is therefore APPENDED to
+// the pool, and the loader + fetch wrapper rotate across it.
+
+type AccountSource = "oauth" | "api" | "env" | "cli"
+
+type PoolAccount = {
+  id: string
+  label?: string
+  /** Raw Cline access token (no workos: prefix required; added on use). */
+  access?: string
+  refresh?: string
+  expires?: number
+  /** Raw token for api/env accounts. */
+  apiKey?: string
+  source: AccountSource
+  addedAt: number
+  /** ms epoch until which this account is skipped (set on 429). */
+  limitedUntil?: number
+  lastUsed?: number
+  lastError?: string
+}
+
+type PoolFile = { version: 1; activeId?: string; accounts: PoolAccount[] }
+
+function poolFilePath(): string {
+  const override = process.env.CLINE_FREE_ACCOUNTS_FILE?.trim()
+  if (override) return override
+  const home = process.env.HOME ?? process.env.USERPROFILE ?? ""
+  const dataDir =
+    process.env.XDG_DATA_HOME?.trim() ||
+    (home ? `${home}/.local/share/opencode` : "")
+  if (dataDir) return `${dataDir}/${ACCOUNTS_FILE_NAME}`
+  return `./${ACCOUNTS_FILE_NAME}`
+}
+
+function stripWorkOSPrefix(token: string): string {
+  return token.trim().replace(/^workos:/i, "")
+}
+
+function sameToken(a: string, b: string): boolean {
+  return stripWorkOSPrefix(a) === stripWorkOSPrefix(b)
+}
+
+function maskToken(token: string): string {
+  const t = stripWorkOSPrefix(token)
+  if (t.length <= 10) return "…"
+  return `${t.slice(0, 4)}…${t.slice(-4)}`
+}
+
+function newAccountId(): string {
+  return `acc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
+}
+
+function nextUtcMidnightMs(now = Date.now(), bufferMs = 5 * 60 * 1000): number {
+  const d = new Date(now)
+  d.setUTCHours(24, 0, 0, 0)
+  return d.getTime() + bufferMs
+}
+
+function parseRetryAfterMs(res: Response): number | undefined {
+  const raw = res.headers?.get?.("retry-after")
+  if (raw) {
+    const secs = Number(raw.trim())
+    if (Number.isFinite(secs) && secs >= 0 && secs <= 48 * 3600) return secs * 1000
+    const date = Date.parse(raw.trim())
+    if (!Number.isNaN(date)) {
+      const delta = date - Date.now()
+      if (delta > 0 && delta <= 48 * 3600 * 1000) return delta
+    }
+  }
+  return undefined
+}
+
+function isRoutableUrl(url: string): boolean {
+  return (
+    url.startsWith(API_BASE) &&
+    (url.includes("/chat/completions") || url.includes("/completions"))
+  )
+}
+
+async function loadPoolFile(): Promise<PoolFile> {
+  try {
+    const { readFile } = await import("node:fs/promises")
+    const raw = await readFile(poolFilePath(), "utf8")
+    const data = JSON.parse(raw) as Partial<PoolFile>
+    const accounts = Array.isArray(data.accounts)
+      ? data.accounts.filter(
+          (a): a is PoolAccount =>
+            !!a && typeof a.id === "string" && (typeof a.access === "string" || typeof a.apiKey === "string"),
+        )
+      : []
+    return { version: 1, activeId: typeof data.activeId === "string" ? data.activeId : undefined, accounts }
+  } catch {
+    return { version: 1, accounts: [] }
+  }
+}
+
+async function savePoolFile(pool: PoolFile): Promise<void> {
+  const { mkdir, writeFile, chmod } = await import("node:fs/promises")
+  const { dirname } = await import("node:path")
+  const file = poolFilePath()
+  await mkdir(dirname(file), { recursive: true })
+  await writeFile(file, JSON.stringify(pool, null, 2), { mode: 0o600 })
+  await chmod(file, 0o600).catch(() => {})
+}
+
+function pruneLimits(pool: PoolFile, now = Date.now()): boolean {
+  let changed = false
+  for (const a of pool.accounts) {
+    if (a.limitedUntil && a.limitedUntil <= now) {
+      delete a.limitedUntil
+      delete a.lastError
+      changed = true
+    }
+  }
+  return changed
+}
+
+/** Split env lists on commas/whitespace/newlines, drop empties. */
+function splitEnvList(value: string): string[] {
+  return value.split(/[\s,;]+/).map((s) => s.trim()).filter((s) => s.length >= 10)
+}
+
+function collectEnvKeys(): string[] {
+  const out: string[] = []
+  const singles = [process.env.CLINE_API_KEY, process.env.CLINE_FREE_API_KEY]
+  for (const s of singles) if (s?.trim()) out.push(s.trim())
+  for (const list of [process.env.CLINE_API_KEYS, process.env.CLINE_FREE_API_KEYS]) {
+    if (list) out.push(...splitEnvList(list))
+  }
+  for (let i = 2; i <= 10; i++) {
+    for (const v of [process.env[`CLINE_API_KEY_${i}`], process.env[`CLINE_FREE_API_KEY_${i}`]]) {
+      if (v?.trim()) out.push(v.trim())
+    }
+  }
+  return [...new Set(out)]
+}
+
+function tokenOf(a: PoolAccount): string | undefined {
+  return a.access ?? a.apiKey
+}
+
+/** Pool accounts plus ephemeral env accounts, deduped by token. */
+function allCandidates(pool: PoolFile): PoolAccount[] {
+  const seen = new Set<string>()
+  const out: PoolAccount[] = []
+  for (const a of pool.accounts) {
+    const t = tokenOf(a)
+    if (!t) continue
+    const key = stripWorkOSPrefix(t)
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(a)
+  }
+  const envKeys = collectEnvKeys()
+  envKeys.forEach((key, i) => {
+    const k = stripWorkOSPrefix(key)
+    if (seen.has(k)) return
+    seen.add(k)
+    const fp = `${k.slice(0, 4)}${k.slice(-4)}${k.length}`
+    out.push({
+      id: `env-${fp}`,
+      label: envKeys.length > 1 ? `env-${i + 1} (${maskToken(key)})` : `env (${maskToken(key)})`,
+      apiKey: key.trim(),
+      source: "env",
+      addedAt: 0,
+    })
+  })
+  return out
+}
+
+function findByToken(pool: PoolFile, token: string): PoolAccount | undefined {
+  const key = stripWorkOSPrefix(token)
+  return (
+    pool.accounts.find((a) => {
+      const t = tokenOf(a)
+      return !!t && stripWorkOSPrefix(t) === key
+    }) ?? allCandidates(pool).find((a) => {
+      const t = tokenOf(a)
+      return !!t && stripWorkOSPrefix(t) === key
+    })
+  )
+}
+
+async function fetchUserEmail(accessToken: string): Promise<string | undefined> {
+  try {
+    const res = await fetch(`${API_BASE}/api/v1/users/me`, {
+      headers: { Authorization: `Bearer ${withWorkOSPrefix(accessToken)}`, Accept: "application/json" },
+    })
+    if (!res.ok) return undefined
+    const j = (await res.json().catch(() => undefined)) as any
+    const email =
+      j?.data?.email ?? j?.data?.user?.email ?? j?.email ?? j?.user?.email ?? j?.data?.userInfo?.email
+    return typeof email === "string" && email.includes("@") ? email : undefined
+  } catch {
+    return undefined
+  }
+}
+
+type Logger = (level: "info" | "warn" | "error", message: string, extra?: Record<string, unknown>) => void
+
+function upsertOAuthAccount(
+  pool: PoolFile,
+  creds: { access: string; refresh: string; expires: number },
+  label?: string,
+  source: AccountSource = "oauth",
+): PoolAccount {
+  const key = stripWorkOSPrefix(creds.access)
+  let acc = pool.accounts.find((a) => {
+    const t = tokenOf(a)
+    return !!t && stripWorkOSPrefix(t) === key
+  })
+  if (acc) {
+    acc.access = stripWorkOSPrefix(creds.access)
+    acc.refresh = creds.refresh
+    acc.expires = creds.expires
+    delete acc.limitedUntil
+    delete acc.lastError
+  } else {
+    acc = {
+      id: newAccountId(),
+      label: label ?? `cline-${pool.accounts.length + 1}`,
+      access: stripWorkOSPrefix(creds.access),
+      refresh: creds.refresh,
+      expires: creds.expires,
+      source,
+      addedAt: Date.now(),
+    }
+    pool.accounts.push(acc)
+  }
+  pool.activeId ??= acc.id
+  return acc
+}
+
+function upsertApiAccount(pool: PoolFile, key: string, label?: string, source: AccountSource = "api"): PoolAccount {
+  const k = stripWorkOSPrefix(key.trim())
+  let acc = pool.accounts.find((a) => {
+    const t = tokenOf(a)
+    return !!t && stripWorkOSPrefix(t) === k
+  })
+  if (acc) {
+    if (acc.access) acc.access = k
+    else acc.apiKey = key.trim()
+    delete acc.limitedUntil
+    delete acc.lastError
+  } else {
+    acc = {
+      id: newAccountId(),
+      label: label ?? `token-${maskToken(k)}`,
+      apiKey: key.trim(),
+      source,
+      addedAt: Date.now(),
+    }
+    pool.accounts.push(acc)
+  }
+  pool.activeId ??= acc.id
+  return acc
+}
+
+// In-memory rotation cursor (round-robin across healthy accounts).
+let rrCursor = 0
+
+/** Next healthy account in round-robin order; undefined when all limited. */
+function selectAccount(pool: PoolFile, now = Date.now()): PoolAccount | undefined {
+  const candidates = allCandidates(pool)
+  // Start scanning at the cursor, keyed on the full candidate order so
+  // parallel requests spread across accounts.
+  const healthy = candidates.filter((a) => !(a.limitedUntil && a.limitedUntil > now))
+  if (healthy.length === 0) return undefined
+  const pick = healthy[rrCursor % healthy.length] ?? healthy[0]
+  rrCursor = (rrCursor + 1) % Math.max(1, candidates.length * 2)
+  return pick
+}
+
+function markAccountLimited(
+  pool: PoolFile,
+  id: string,
+  retryAfterMs: number | undefined,
+  log: Logger,
+  detail?: string,
+): void {
+  const acc = pool.accounts.find((a) => a.id === id)
+  const until = Date.now() + (retryAfterMs ?? nextUtcMidnightMs() - Date.now())
+  const name = acc?.label ?? id
+  if (acc) {
+    acc.limitedUntil = until
+    acc.lastError = `429${detail ? `: ${detail}` : ""}`
+  }
+  log("warn", `cline-free: account ${name} hit 429 — cooling down until ${new Date(until).toISOString()}${detail ? ` (${detail})` : ""}`, {
+    accountId: id,
+    limitedUntil: until,
+  })
+  void savePoolFile(pool).catch(() => {})
+}
+
+function describeLimits(pool: PoolFile): string {
+  const limited = pool.accounts.filter((a) => a.limitedUntil && a.limitedUntil > Date.now())
+  if (limited.length === 0) return ""
+  return ` Limited: ${limited.map((a) => `${a.label ?? a.id}→${new Date(a.limitedUntil!).toISOString()}`).join(", ")}.`
+}
+
+// --- Transparent same-request 429 failover ---
+//
+// OpenCode's AI SDK performs the HTTPS call with the apiKey the loader
+// returned. When Cline answers 429 we swap in the next healthy account and
+// replay the request, so one exhausted daily quota doesn't fail the turn.
+
+const FETCH_PATCH_KEY = "__cline_free_fetch_router__"
+
+function installFetchRouter(pool: PoolFile, log: Logger): void {
+  const g = globalThis as Record<string | symbol, unknown>
+  if (g[FETCH_PATCH_KEY]) return
+  g[FETCH_PATCH_KEY] = true
+  const origFetch = globalThis.fetch.bind(globalThis)
+
+  globalThis.fetch = (async (input: any, init?: any): Promise<Response> => {
+    let url: string
+    try {
+      url =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : typeof input?.url === "string"
+              ? input.url
+              : ""
+    } catch {
+      return origFetch(input, init)
+    }
+    if (!isRoutableUrl(url)) return origFetch(input, init)
+
+    // Normalize to replayable parts (chat bodies are small JSON).
+    let method = "POST"
+    let headers = new Headers()
+    let body: ArrayBuffer | null = null
+    let signal: AbortSignal | undefined
+    try {
+      if (typeof input === "string" || input instanceof URL) {
+        method = init?.method ?? "POST"
+        headers = new Headers(init?.headers)
+        signal = init?.signal
+        const b = init?.body
+        if (typeof b === "string") body = new TextEncoder().encode(b).buffer as ArrayBuffer
+        else if (b instanceof ArrayBuffer) body = b
+        else if (ArrayBuffer.isView(b)) body = b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer
+        else if (b != null) {
+          // Non-replayable stream body: single attempt, no rotation.
+          return origFetch(input, init)
+        }
+      } else {
+        const req = input as Request
+        method = req.method ?? init?.method ?? "POST"
+        headers = new Headers(req.headers)
+        for (const [k, v] of new Headers(init?.headers ?? {})) headers.set(k, v)
+        signal = init?.signal ?? req.signal
+        const buf = await req.clone().arrayBuffer().catch(() => null)
+        body = buf && buf.byteLength > 0 ? buf : null
+      }
+    } catch {
+      return origFetch(input, init)
+    }
+
+    const incomingAuth = headers.get("authorization") ?? ""
+    const incomingToken = incomingAuth.replace(/^bearer\s+/i, "")
+    const now = Date.now()
+    pruneLimits(pool, now)
+
+    // First attempt keeps the loader-chosen identity; rotation only kicks
+    // in after a 429, so the round-robin cursor advances once per request.
+    const first =
+      incomingToken && findByToken(pool, incomingToken)
+        ? { token: incomingToken, accountId: findByToken(pool, incomingToken)!.id }
+        : undefined
+
+    const tried = new Set<string>()
+    let lastRes: Response | undefined
+    // Bound attempts: first identity + every other healthy candidate once.
+    const maxAttempts = allCandidates(pool).length + 1
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      let token: string
+      let accountId: string | undefined
+      if (attempt === 0 && first) {
+        ;({ token, accountId } = first)
+      } else {
+        if (attempt === 0 && !first && incomingToken) {
+          // Unknown identity (manual header override): try it once as-is.
+          token = incomingToken
+        } else {
+          const next = selectAccount(pool, Date.now())
+          if (!next) break
+          const t = tokenOf(next)
+          if (!t || tried.has(next.id)) continue
+          token = t
+          accountId = next.id
+        }
+      }
+      if (accountId) {
+        if (tried.has(accountId)) continue
+        tried.add(accountId)
+      } else if (tried.has(`raw:${stripWorkOSPrefix(token)}`)) {
+        continue
+      } else {
+        tried.add(`raw:${stripWorkOSPrefix(token)}`)
+      }
+
+      const h = new Headers(headers)
+      h.set("authorization", `Bearer ${withWorkOSPrefix(token)}`)
+      let res: Response
+      try {
+        res = await origFetch(url, { method, headers: h, body, signal })
+      } catch (e) {
+        throw e
+      }
+      if (res.status !== 429) {
+        if (accountId) {
+          pool.activeId = accountId
+          const acc = pool.accounts.find((a) => a.id === accountId)
+          if (acc) {
+            acc.lastUsed = Date.now()
+            void savePoolFile(pool).catch(() => {})
+          }
+        }
+        if (attempt > 0) log("info", `cline-free: request recovered on ${pool.accounts.find((a) => a.id === accountId)?.label ?? "fallback account"} after 429 (attempt ${attempt + 1})`)
+        return res
+      }
+
+      // 429: note the snippet, park this account, try the next one.
+      let snippet = ""
+      try {
+        snippet = ((await res.clone().text().catch(() => "")) || "").slice(0, 300)
+      } catch {
+        snippet = ""
+      }
+      try {
+        await res.arrayBuffer().catch(() => {})
+      } catch {
+        /* ignore */
+      }
+      const retryAfter = parseRetryAfterMs(res)
+      const detail = snippet.replace(/\s+/g, " ").trim().slice(0, 160) || undefined
+      if (accountId && pool.accounts.some((a) => a.id === accountId)) {
+        markAccountLimited(pool, accountId, retryAfter, log, detail)
+      } else {
+        log("warn", `cline-free: 429 on untracked identity (${maskToken(token)})${detail ? ` — ${detail}` : ""}`)
+        break
+      }
+      lastRes = res
+    }
+
+    if (lastRes) {
+      const waiting = pool.accounts
+        .filter((a) => a.limitedUntil && a.limitedUntil > Date.now())
+        .map((a) => `${a.label ?? a.id}→${new Date(a.limitedUntil!).toISOString()}`)
+        .join(", ")
+      log("error", `cline-free: all ${tried.size} account(s) hit 429 daily quota. ${waiting ? `Cooling: ${waiting}. ` : ""}Add another Cline account via /connect to keep going.`)
+      // Replay once on the earliest-reset account so the caller sees the
+      // real server error body instead of a synthesized one.
+      const earliest = [...pool.accounts]
+        .filter((a) => tokenOf(a))
+        .sort((a, b) => (a.limitedUntil ?? 0) - (b.limitedUntil ?? 0))[0]
+      const t = earliest ? tokenOf(earliest) : undefined
+      if (earliest && t) {
+        const h = new Headers(headers)
+        h.set("authorization", `Bearer ${withWorkOSPrefix(t)}`)
+        try {
+          return await origFetch(url, { method, headers: h, body, signal })
+        } catch (e) {
+          throw e
+        }
+      }
+      return lastRes
+    }
+    return origFetch(input, init)
+  }) as typeof fetch
+}
+
 // --- OpenCode plugin ---
 
 const ClineFreePlugin: Plugin = async ({ client }) => {
+  const log: Logger = (level, message, extra) => {
+    void client.app
+      .log({ body: { service: "cline-free", level, message, ...(extra ? { extra } : {}) } })
+      .catch(() => {})
+  }
+
+  // Account pool: single source of truth for rotation. Seeded from the
+  // pool file; env keys + native OpenCode auth merge in per request.
+  const pool = await loadPoolFile()
+  if (pruneLimits(pool)) void savePoolFile(pool).catch(() => {})
+  installFetchRouter(pool, log)
+
   // Fetch once at startup so /models shows the current rotation.
   // Falls back to FALLBACK_FREE offline (still usable until Cline rotates).
   const free = await fetchFreeModels()
@@ -399,6 +902,12 @@ const ClineFreePlugin: Plugin = async ({ client }) => {
       extra: { models: free.map((m) => m.id) },
     },
   }).catch(() => {})
+  const seeded = allCandidates(pool).length
+  if (seeded > 0) {
+    log("info", `cline-free: ${pool.accounts.length} stored account(s) + env merged → ${seeded} rotation candidate(s)`, {
+      accounts: pool.accounts.map((a) => ({ id: a.id, label: a.label, source: a.source })),
+    })
+  }
 
   return {
     config: async (config: any) => {
@@ -430,40 +939,82 @@ const ClineFreePlugin: Plugin = async ({ client }) => {
     auth: {
       provider: PROVIDER_ID,
       loader: async (getAuth: () => Promise<any>, provider: any) => {
-        const envKey =
-          process.env.CLINE_API_KEY ?? process.env.CLINE_FREE_API_KEY ?? process.env[`${PROVIDER_ID.toUpperCase().replace(/-/g, "_")}_API_KEY`]
+        const baseHeaders = { "X-CLIENT-TYPE": "opencode" }
+        pruneLimits(pool)
         const auth = await getAuth().catch(() => undefined)
-        if (!auth && envKey) return { apiKey: withWorkOSPrefix(envKey) }
-        if (!auth) return {}
-        if (auth.type === "api") {
-          return { apiKey: withWorkOSPrefix(String(auth.key)) }
+
+        // Merge the native single Auth into the pool (append, never
+        // replace) so repeated `/connect` calls accumulate accounts.
+        if (auth?.type === "api" && typeof auth.key === "string" && auth.key.trim()) {
+          const before = pool.accounts.length
+          upsertApiAccount(pool, String(auth.key), "connect-token")
+          if (pool.accounts.length !== before) void savePoolFile(pool).catch(() => {})
+        } else if (auth?.type === "oauth" && typeof auth.access === "string") {
+          const before = pool.accounts.length
+          const acc = upsertOAuthAccount(
+            pool,
+            { access: String(auth.access), refresh: String(auth.refresh ?? ""), expires: Number(auth.expires ?? 0) },
+            typeof auth.accountId === "string" ? auth.accountId : undefined,
+          )
+          // Backfill a friendly label once per new account.
+          if (pool.accounts.length !== before && (!acc.label || acc.label === auth.accountId)) {
+            void fetchUserEmail(String(auth.access)).then((email) => {
+              if (email) {
+                acc.label = email
+                void savePoolFile(pool).catch(() => {})
+              }
+            })
+          }
+          if (pool.accounts.length !== before) void savePoolFile(pool).catch(() => {})
         }
-        if (auth.type === "oauth") {
-          let { access, refresh, expires } = auth
-          if (typeof expires === "number" && expires - Date.now() < REFRESH_BUFFER_MS) {
-            try {
-              const next = await refreshClineToken(refresh)
-              access = next.access
-              refresh = next.refresh
-              expires = next.expires
-              await provider?.update?.({ access, refresh, expires }).catch(() => {})
-            } catch (e) {
-              await client.app.log({
-                body: {
-                  service: "cline-free",
-                  level: "warn",
-                  message: `Cline token refresh failed: ${e instanceof Error ? e.message : String(e)}`,
-                },
-              }).catch(() => {})
+
+        const picked = selectAccount(pool, Date.now())
+        if (!picked) {
+          const candidates = allCandidates(pool)
+          if (candidates.length === 0) return {}
+          // Every account is cooling down: report when the first recovers
+          // instead of failing silently. The fetch router replays on the
+          // earliest account so the caller still sees the real 429 body.
+          const earliest = [...candidates].sort((a, b) => (a.limitedUntil ?? 0) - (b.limitedUntil ?? 0))[0]
+          const t = tokenOf(earliest)
+          if (!t) return {}
+          log("warn", `cline-free: all accounts cooling down — next reset ${new Date(earliest.limitedUntil ?? Date.now()).toISOString()}${describeLimits(pool)}`)
+          return { apiKey: withWorkOSPrefix(t), baseURL: CHAT_BASE_URL, headers: baseHeaders }
+        }
+
+        // Refresh the picked oauth account if it is about to expire.
+        if (picked.access && picked.refresh && typeof picked.expires === "number" && picked.expires - Date.now() < REFRESH_BUFFER_MS) {
+          try {
+            const next = await refreshClineToken(picked.refresh)
+            picked.access = next.access
+            picked.refresh = next.refresh
+            picked.expires = next.expires
+            delete picked.lastError
+            void savePoolFile(pool).catch(() => {})
+            // Keep the native single-auth entry fresh only when it is the
+            // same account we just refreshed.
+            if (auth?.type === "oauth" && typeof auth.access === "string" && sameToken(auth.access, next.access)) {
+              await provider?.update?.({ access: next.access, refresh: next.refresh, expires: next.expires }).catch(() => {})
+            }
+          } catch (e) {
+            log("warn", `cline-free: token refresh failed for ${picked.label ?? picked.id}: ${e instanceof Error ? e.message : String(e)} — trying next account`, { accountId: picked.id })
+            picked.lastError = "refresh failed"
+            const fallback = selectAccount(pool, Date.now())
+            const ft = fallback ? tokenOf(fallback) : undefined
+            if (fallback && ft && fallback.id !== picked.id) {
+              pool.activeId = fallback.id
+              fallback.lastUsed = Date.now()
+              void savePoolFile(pool).catch(() => {})
+              return { apiKey: withWorkOSPrefix(ft), baseURL: CHAT_BASE_URL, headers: baseHeaders }
             }
           }
-          return {
-            apiKey: withWorkOSPrefix(String(access)),
-            baseURL: CHAT_BASE_URL,
-            headers: { "X-CLIENT-TYPE": "opencode" },
-          }
         }
-        return {}
+
+        const token = tokenOf(picked)
+        if (!token) return {}
+        pool.activeId = picked.id
+        picked.lastUsed = Date.now()
+        return { apiKey: withWorkOSPrefix(token), baseURL: CHAT_BASE_URL, headers: baseHeaders }
       },
       methods: [
         {
@@ -502,6 +1053,12 @@ const ClineFreePlugin: Plugin = async ({ client }) => {
                   } else if (!(await validateClineToken(access))) {
                     return { type: "failed" as const }
                   }
+                  // Append to the pool (never replace): repeated logins
+                  // accumulate rotation candidates.
+                  const acc = upsertOAuthAccount(pool, { access, refresh, expires }, session.email, "cli")
+                  if (session.email) acc.label = session.email
+                  void savePoolFile(pool).catch(() => {})
+                  log("info", `cline-free: added CLI-imported account ${acc.label ?? acc.id} (${pool.accounts.length} total)`, { accountId: acc.id })
                   return { type: "success" as const, access, refresh, expires }
                 } catch {
                   return { type: "failed" as const }
@@ -531,6 +1088,11 @@ const ClineFreePlugin: Plugin = async ({ client }) => {
                     device.intervalSeconds,
                   )
                   const creds = await registerWorkOSTokens(workos)
+                  const email = await fetchUserEmail(creds.access)
+                  const acc = upsertOAuthAccount(pool, creds, email, "oauth")
+                  if (email) acc.label = email
+                  void savePoolFile(pool).catch(() => {})
+                  log("info", `cline-free: added account ${acc.label ?? acc.id} (${pool.accounts.length} total)`, { accountId: acc.id })
                   return { type: "success" as const, ...creds }
                 } catch {
                   return { type: "failed" as const }
@@ -562,10 +1124,86 @@ const ClineFreePlugin: Plugin = async ({ client }) => {
             } catch {
               return { type: "failed" as const }
             }
+            const email = await fetchUserEmail(key)
+            const acc = upsertApiAccount(pool, key, email)
+            if (email) acc.label = email
+            void savePoolFile(pool).catch(() => {})
+            log("info", `cline-free: added manual token ${acc.label ?? acc.id} (${pool.accounts.length} total)`, { accountId: acc.id })
             return { type: "success" as const, key }
           },
         },
       ],
+    },
+
+    tool: {
+      cline_free_status: tool({
+        description:
+          "Show Cline Free account pool status: stored accounts, env accounts, which is active, and 429 cooldowns.",
+        args: {},
+        async execute() {
+          pruneLimits(pool)
+          const candidates = allCandidates(pool)
+          const now = Date.now()
+          const lines = candidates.map((a) => {
+            const t = tokenOf(a)
+            const limited = a.limitedUntil && a.limitedUntil > now
+            const flags = [
+              a.id === pool.activeId ? "active" : "",
+              limited ? `COOLDOWN→${new Date(a.limitedUntil!).toISOString()}` : "",
+              a.source,
+            ]
+              .filter(Boolean)
+              .join(" | ")
+            return `- ${a.label ?? a.id} [${a.id}] (${flags}) token ${t ? maskToken(t) : "?"}` +
+              (a.expires ? ` expires ${new Date(a.expires).toISOString()}` : "")
+          })
+          const header = `cline-free pool: ${candidates.length} candidate(s) (${pool.accounts.length} stored + ${candidates.length - pool.accounts.length} env). File: ${poolFilePath()}`
+          return lines.length > 0 ? `${header}\n${lines.join("\n")}` : `${header}\n(no accounts — run /connect and pick cline-free)`
+        },
+      }),
+
+      cline_free_remove: tool({
+        description: "Remove a stored Cline Free account from the rotation pool by id (see cline_free_status). Env accounts cannot be removed here — unset the env var instead.",
+        args: {
+          id: tool.schema.string().describe("Account id (acc_...) from cline_free_status"),
+        },
+        async execute(args) {
+          const idx = pool.accounts.findIndex((a) => a.id === args.id)
+          if (idx === -1) return `No stored account with id ${args.id}.`
+          const [removed] = pool.accounts.splice(idx, 1)
+          if (pool.activeId === args.id) delete pool.activeId
+          await savePoolFile(pool).catch(() => {})
+          log("info", `cline-free: removed account ${removed.label ?? removed.id}`, { accountId: args.id })
+          return `Removed ${removed.label ?? removed.id} (${pool.accounts.length} stored left).`
+        },
+      }),
+
+      cline_free_add_token: tool({
+        description: "Validate and add a Cline token (workos:... or raw) to the rotation pool.",
+        args: {
+          token: tool.schema.string().describe("Cline token (workos:... or raw access token)"),
+          label: tool.schema.string().optional().describe("Friendly label (defaults to account email)"),
+        },
+        async execute(args) {
+          const key = args.token?.trim()
+          if (!key) return "No token provided."
+          try {
+            const res = await fetch(`${API_BASE}/api/v1/users/me`, {
+              headers: { Authorization: `Bearer ${withWorkOSPrefix(key)}`, Accept: "application/json" },
+            })
+            if (!res.ok) return `Token rejected by Cline (HTTP ${res.status}). Not added.`
+          } catch (e) {
+            return `Could not reach Cline: ${e instanceof Error ? e.message : String(e)}. Not added.`
+          }
+          const email = await fetchUserEmail(key)
+          const acc = upsertApiAccount(pool, key, args.label?.trim() || email)
+          if (args.label?.trim()) acc.label = args.label.trim()
+          else if (email) acc.label = email
+          await savePoolFile(pool).catch(() => {})
+          log("info", `cline-free: added token ${acc.label ?? acc.id} (${pool.accounts.length} total)`, { accountId: acc.id })
+          return `Added ${acc.label ?? acc.id} [${acc.id}] (${pool.accounts.length} stored total).`
+        },
+      }),
     },
   }
 }

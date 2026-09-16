@@ -47,6 +47,37 @@ Restart OpenCode.
 # 3. Cline token (manual)                             <- paste a workos:... token
 ```
 
+Repeat `/connect` → `cline-free` for every extra Cline account: logins
+**append** to the rotation pool instead of replacing each other.
+
+## Multiple accounts + 429 failover
+
+Free quota is per Cline account and resets daily. The plugin keeps a pool
+(`~/.local/share/opencode/cline-free-accounts.json`, override with
+`CLINE_FREE_ACCOUNTS_FILE`) and rotates across it:
+
+- **Loader** picks the next healthy account round-robin per request
+  (limited accounts are skipped).
+- **Fetch router**: if Cline answers `429` on a chat request, that account
+  is parked until it recovers (`Retry-After` when the server sends one,
+  otherwise next UTC midnight for the daily reset) and the **same request
+  is retried** on the next account — the turn doesn't fail.
+- Only `429` triggers a switch. `401/403/5xx` pass through untouched so
+  real login problems and outages stay visible.
+- Cooldowns persist in the pool file, so they survive restarts.
+
+Add accounts three ways (they merge, deduped by token):
+
+1. `/connect` → `cline-free` repeatedly (device flow / CLI import / manual).
+2. Env vars: `CLINE_API_KEY` / `CLINE_FREE_API_KEY`, lists via
+   `CLINE_API_KEYS` / `CLINE_FREE_API_KEYS` (comma/space/newline separated),
+   or numbered `CLINE_API_KEY_2` … `CLINE_API_KEY_10`
+   (same with `CLINE_FREE_` prefix). Env accounts are ephemeral —
+   unset the var to drop them.
+3. Agent tools: `cline_free_status` (list accounts, active marker,
+   cooldowns), `cline_free_add_token` (validate + add a token),
+   `cline_free_remove` (drop a stored account by id).
+
 Already logged into Cline in your browser? Method 2 is then a single
 Confirm/Approve click: the login URL has your code pre-filled, so with an
 active Cline browser session there's no password and no code to type —
@@ -63,6 +94,9 @@ paste a `workos:...` token, or set:
 
 ```bash
 export CLINE_API_KEY="workos:..."
+# extra accounts for rotation:
+export CLINE_API_KEY_2="workos:..."
+export CLINE_FREE_API_KEYS="workos:...,workos:..."
 ```
 
 ## Use
