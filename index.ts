@@ -8,13 +8,14 @@ import { tool } from "@opencode-ai/plugin"
  * Cline account (same account/quota you see in Cline VSCode/CLI).
  *
  * Live list: GET https://api.cline.bot/api/v1/ai/cline/recommended-models
- * As of 2026-09-15 the `free` array is:
+ * As of 2026-09-17 the `free` array is:
  * - cline-free/deepseek-v4.1-flash
+ * - stealth/union-alpha
  * - cline-free/muse-spark-1.3-contributor
  * - z-ai/glm-5.3-flash
  * - cline-free/solar-pro4
  * - poolside/laguna-s-2.1:free
- * (glm-5.3-flash + laguna overlap with Zen, the other 3 are Cline-only free.)
+ * (glm-5.3-flash + laguna overlap with Zen, the other 4 are Cline-only free.)
  * Note: deepseek/deepseek-v4-flash (2026-09-13) has rotated out; kept as
  * a known id for stale configs.
  */
@@ -57,6 +58,12 @@ const FALLBACK_FREE: FreeEntry[] = [
       "Sparse MoE (CED architecture) with native image understanding and 1M context window.",
   },
   {
+    id: "stealth/union-alpha",
+    name: "Union Alpha",
+    description:
+      "Multimodal model built for research, coding, and agentic workflows.",
+  },
+  {
     id: "cline-free/muse-spark-1.3-contributor",
     name: "Muse Spark 1.3 Contributor",
     description:
@@ -89,6 +96,7 @@ const FALLBACK_FREE: FreeEntry[] = [
 // cache_write 0 (no vendor publishes a write rate for these).
 const COSTS: Record<string, { input: number; output: number; cache_read: number }> = {
   "cline-free/muse-spark-1.3-contributor": { input: 0.1, output: 0.2, cache_read: 0.002 },
+  "stealth/union-alpha": { input: 0, output: 0, cache_read: 0 },
   "cline-free/deepseek-v4.1-flash": { input: 0.1, output: 0.4, cache_read: 0.003 },
   "deepseek/deepseek-v4.1-flash": { input: 0.1, output: 0.4, cache_read: 0.003 },
   "deepseek/deepseek-v4-flash": { input: 0.14, output: 0.28, cache_read: 0.0028 },
@@ -99,6 +107,7 @@ const COSTS: Record<string, { input: number; output: number; cache_read: number 
 const DEFAULT_COST = { input: 0, output: 0, cache_read: 0 }
 const LIMITS: Record<string, { context: number; output: number }> = {
   "cline-free/muse-spark-1.3-contributor": { context: 1_048_576, output: 131_072 },
+  "stealth/union-alpha": { context: 262_144, output: 131_072 },
   "cline-free/deepseek-v4.1-flash": { context: 1_000_000, output: 384_000 },
   "deepseek/deepseek-v4.1-flash": { context: 1_000_000, output: 384_000 },
   "deepseek/deepseek-v4-flash": { context: 1_048_576, output: 384_000 },
@@ -114,6 +123,7 @@ const DEFAULT_LIMIT = { context: 200_000, output: 32_000 }
 // - muse-spark keeps video/audio/pdf per vendor docs (models.dev only says image).
 const INPUT_MODALITIES: Record<string, string[]> = {
   "cline-free/muse-spark-1.3-contributor": ["text", "image", "video", "audio", "pdf"],
+  "stealth/union-alpha": ["text", "image"],
   "cline-free/deepseek-v4.1-flash": ["text", "image"],
   "deepseek/deepseek-v4.1-flash": ["text", "image"],
   "deepseek/deepseek-v4-flash": ["text"],
@@ -132,8 +142,11 @@ const INPUT_MODALITIES: Record<string, string[]> = {
 // - glm officially documents low/high/max only (medium is accepted but
 //   mapped to max by the companion reasoning hook)
 // - laguna exposes only off/max (max is default) → no variants
+// - union-alpha has no documented reasoning-effort toggle (stealth preview;
+//   optimized for agentic/coding, not a dedicated reasoning model) → no variants
 const VARIANTS: Record<string, string[]> = {
   "cline-free/muse-spark-1.3-contributor": ["minimal", "low", "medium", "high", "xhigh"],
+  "stealth/union-alpha": [],
   "cline-free/deepseek-v4.1-flash": ["low", "high", "max"],
   "deepseek/deepseek-v4.1-flash": ["low", "high", "max"],
   "deepseek/deepseek-v4-flash": ["low", "medium", "high", "max"],

@@ -7,11 +7,12 @@ Live source: `GET https://api.cline.bot/api/v1/ai/cline/recommended-models`
 (`free` array). The plugin fetches it on every startup, so rotations appear
 automatically. Offline it falls back to a bundled list.
 
-Current free rotation (2026-09-15):
+Current free rotation (2026-09-17):
 
 | Model id | Notes |
 |---|---|
 | `cline-free/deepseek-v4.1-flash` | Cline-only free, native text+image input, 1M ctx / 384K out | low, high, max (no medium) |
+| `stealth/union-alpha` | stealth preview (vendor anonymous), text+image input, 262K ctx / 128K out, tool calling | no variants |
 | `cline-free/muse-spark-1.3-contributor` | Cline-only free | low, medium, high (`max` fails server-side) |
 | `z-ai/glm-5.3-flash` | also on Zen | low, high, max |
 | `cline-free/solar-pro4` | Cline-only free | low, medium, high, max |
