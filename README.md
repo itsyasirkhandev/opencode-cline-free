@@ -12,7 +12,7 @@ Current free rotation (2026-09-17):
 | Model id | Notes |
 |---|---|
 | `cline-free/deepseek-v4.1-flash` | Cline-only free, native text+image input, 1M ctx / 384K out | low, high, max (no medium) |
-| `stealth/union-alpha` | stealth preview (vendor anonymous), text+image input, 262K ctx / 128K out, tool calling | no variants |
+| `stealth/union-alpha` | stealth preview (vendor anonymous), text+image input, 262K ctx / 128K out, tool calling | low, medium, high, xhigh (medium default) |
 | `cline-free/muse-spark-1.3-contributor` | Cline-only free | low, medium, high (`max` fails server-side) |
 | `z-ai/glm-5.3-flash` | also on Zen | low, high, max |
 | `cline-free/solar-pro4` | Cline-only free | low, medium, high, max |

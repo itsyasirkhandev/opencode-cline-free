@@ -142,17 +142,23 @@ const INPUT_MODALITIES: Record<string, string[]> = {
 // - glm officially documents low/high/max only (medium is accepted but
 //   mapped to max by the companion reasoning hook)
 // - laguna exposes only off/max (max is default) → no variants
-// - union-alpha has no documented reasoning-effort toggle (stealth preview;
-//   optimized for agentic/coding, not a dedicated reasoning model) → no variants
+// - union-alpha accepts low/medium/high/xhigh (medium is the server default)
 const VARIANTS: Record<string, string[]> = {
   "cline-free/muse-spark-1.3-contributor": ["minimal", "low", "medium", "high", "xhigh"],
-  "stealth/union-alpha": [],
+  "stealth/union-alpha": ["low", "medium", "high", "xhigh"],
   "cline-free/deepseek-v4.1-flash": ["low", "high", "max"],
   "deepseek/deepseek-v4.1-flash": ["low", "high", "max"],
   "deepseek/deepseek-v4-flash": ["low", "medium", "high", "max"],
   "z-ai/glm-5.3-flash": ["low", "high", "max"],
   "cline-free/solar-pro4": ["low", "medium", "high", "max"],
   "poolside/laguna-s-2.1:free": [],
+}
+
+// Default reasoning effort sent as the base model `options.reasoningEffort`
+// (i.e. requests with no explicit variant). union-alpha's server default is
+// medium, so we set it explicitly to keep no-variant runs on medium.
+const DEFAULT_EFFORT: Record<string, string> = {
+  "stealth/union-alpha": "medium",
 }
 
 function withWorkOSPrefix(token: string): string {
@@ -173,6 +179,7 @@ function modelConfig(entry: FreeEntry) {
   const limit = LIMITS[entry.id] ?? DEFAULT_LIMIT
   const levels = VARIANTS[entry.id] ?? ["low", "medium", "high", "max"]
   const cost = COSTS[entry.id] ?? DEFAULT_COST
+  const defaultEffort = DEFAULT_EFFORT[entry.id]
   const variants: Record<string, { reasoningEffort: string }> = {}
   for (const level of levels) variants[level] = { reasoningEffort: level }
   return {
@@ -182,6 +189,7 @@ function modelConfig(entry: FreeEntry) {
     tool_call: true,
     reasoning: true,
     cost: { input: cost.input, output: cost.output, cache_read: cost.cache_read, cache_write: 0 },
+    ...(defaultEffort ? { options: { reasoningEffort: defaultEffort } } : {}),
     ...(levels.length > 0 ? { variants } : {}),
   }
 }
