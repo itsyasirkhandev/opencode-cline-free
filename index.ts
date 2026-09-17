@@ -144,7 +144,11 @@ const VARIANTS: Record<string, string[]> = {
 
 function withWorkOSPrefix(token: string): string {
   const t = token.trim()
-  return t.toLowerCase().startsWith(WORKOS_PREFIX) ? t : `${WORKOS_PREFIX}${t}`
+  if (t.toLowerCase().startsWith(WORKOS_PREFIX)) return t
+  // Cline API keys (sk_…) authenticate raw — the prefix is only valid for
+  // OAuth access tokens, which are always JWTs.
+  if (!t.startsWith("eyJ")) return t
+  return `${WORKOS_PREFIX}${t}`
 }
 
 function displayName(entry: FreeEntry): string {
@@ -613,6 +617,9 @@ type PoolAccount = {
   addedAt: number
   /** ms epoch until which this account is skipped (set on 429). */
   limitedUntil?: number
+  /** Per-model 429 cooldowns: Cline's free caps are per user+model, so an
+   * account exhausted on deepseek still has muse quota (and vice versa). */
+  modelLimits?: Record<string, number>
   lastUsed?: number
   lastError?: string
   /** Terminal auth failure (e.g. invalid_grant): excluded from rotation
@@ -623,6 +630,27 @@ type PoolAccount = {
 }
 
 type PoolFile = { version: 1; activeId?: string; accounts: PoolAccount[] }
+
+/** Per-model 429 cooldowns make selectAccount model-aware: the router
+ * extracts the model from the chat body and picks an account that still
+ * has quota for THAT model. */
+function modelOfRequest(url: string, body: ArrayBuffer | null): string | undefined {
+  if (!body || !url.includes("/chat/completions")) return undefined
+  try {
+    const parsed = JSON.parse(new TextDecoder().decode(body))
+    const m = parsed?.model
+    return typeof m === "string" && m.trim() ? m.trim() : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** ms epoch when this account's cooldown for `model` ends, if any. */
+function modelLimitUntil(acc: PoolAccount, model: string | undefined): number | undefined {
+  if (!model || !acc.modelLimits) return undefined
+  const until = acc.modelLimits[model]
+  return typeof until === "number" ? until : undefined
+}
 
 function poolFilePath(): string {
   const override = process.env.CLINE_FREE_ACCOUNTS_FILE?.trim()
@@ -753,6 +781,20 @@ function parseRetryAfterMs(res: Response): number | undefined {
   return undefined
 }
 
+/** Cline's INFERENCE_CAP bodies carry "Try again in 1h 37m" (no
+ * Retry-After header): parse it so per-model cooldowns match the server. */
+function parseRetryAfterFromBody(detail: string | undefined): number | undefined {
+  if (!detail) return undefined
+  const m = /try again in\s*(?:(\d+)\s*d(?:ays?)?)?\s*(?:(\d+)\s*h(?:rs?|ours?)?)?\s*(?:(\d+)\s*m(?:ins?|inutes?)?)?/i.exec(detail)
+  if (!m) return undefined
+  const d = Number(m[1] ?? 0)
+  const h = Number(m[2] ?? 0)
+  const min = Number(m[3] ?? 0)
+  const total = (d * 24 + h) * 3600_000 + min * 60_000
+  if (total <= 0 || total > 48 * 3600_000) return undefined
+  return total
+}
+
 function isRoutableUrl(url: string): boolean {
   return (
     url.startsWith(API_BASE) &&
@@ -855,6 +897,15 @@ function pruneLimits(pool: PoolFile, now = Date.now()): boolean {
       delete a.lastError
       changed = true
     }
+    if (a.modelLimits) {
+      for (const [m, until] of Object.entries(a.modelLimits)) {
+        if (until <= now) {
+          delete a.modelLimits[m]
+          changed = true
+        }
+      }
+      if (Object.keys(a.modelLimits).length === 0) delete a.modelLimits
+    }
   }
   return changed
 }
@@ -931,9 +982,16 @@ function allCandidates(pool: PoolFile): PoolAccount[] {
  * Keeps the freshest entry per user/email, drops the rest. Returns true
  * when anything was removed. Also repairs activeId. */
 function dedupePool(pool: PoolFile): boolean {
+  // API-key accounts (sk_…) carry no JWT identity and are often the fallback
+  // credential for the same Cline user as an OAuth account, so they must
+  // never be collapsed by email match.
+  const keepAlways = new Set(
+    pool.accounts.filter((a) => a.apiKey && !a.access).map((a) => a.id),
+  )
   const bestByUser = new Map<string, PoolAccount>()
   const bestByEmail = new Map<string, PoolAccount>()
   for (const a of pool.accounts) {
+    if (keepAlways.has(a.id)) continue
     const t = tokenOf(a)
     if (!t) continue
     const ukey = clineUserKey(t)
@@ -948,8 +1006,8 @@ function dedupePool(pool: PoolFile): boolean {
       if (!cur || freshnessOf(a) > freshnessOf(cur)) bestByEmail.set(email, a)
     }
   }
-  if (bestByUser.size === 0 && bestByEmail.size === 0) return false
-  const keep = new Set<string>()
+  if (bestByUser.size === 0 && bestByEmail.size === 0 && keepAlways.size === 0) return false
+  const keep = new Set<string>(keepAlways)
   for (const a of bestByUser.values()) keep.add(a.id)
   for (const a of bestByEmail.values()) {
     // Don't let a generic email fallback rescue an entry that already lost
@@ -994,6 +1052,9 @@ function findOAuthDuplicate(
     return !!t && stripWorkOSPrefix(t) === key
   })
   if (byToken) return byToken
+  // API keys (sk_…) have no JWT identity: they must stay a separate fallback
+  // account, never merged into (or matched by email with) an OAuth account.
+  if (!decodeJwtPayload(key)) return undefined
   const ukey = clineUserKey(access)
   if (ukey) {
     const byUser = pool.accounts.find((a) => {
@@ -1221,12 +1282,16 @@ async function probeQuarantinedAccounts(pool: PoolFile, log: Logger): Promise<vo
 // In-memory rotation cursor (round-robin across healthy accounts).
 let rrCursor = 0
 
-/** Next healthy account in round-robin order; undefined when all limited. */
-function selectAccount(pool: PoolFile, now = Date.now()): PoolAccount | undefined {
+/** Next healthy account in round-robin order; undefined when all limited.
+ * With `model`, only accounts whose per-model quota is intact qualify. */
+function selectAccount(pool: PoolFile, now = Date.now(), model?: string): PoolAccount | undefined {
   const candidates = allCandidates(pool)
   // Start scanning at the cursor, keyed on the full candidate order so
   // parallel requests spread across accounts.
-  const healthy = candidates.filter((a) => !(a.limitedUntil && a.limitedUntil > now))
+  const healthy = candidates.filter((a) => {
+    const until = modelLimitUntil(a, model)
+    return !until || until <= now
+  })
   if (healthy.length === 0) return undefined
   const pick = healthy[rrCursor % healthy.length] ?? healthy[0]
   rrCursor = (rrCursor + 1) % Math.max(1, candidates.length * 2)
@@ -1239,18 +1304,28 @@ function markAccountLimited(
   retryAfterMs: number | undefined,
   log: Logger,
   detail?: string,
+  model?: string,
 ): void {
   const acc = pool.accounts.find((a) => a.id === id)
   const until = Date.now() + (retryAfterMs ?? nextUtcMidnightMs() - Date.now())
   const name = acc?.label ?? id
   if (acc) {
-    acc.limitedUntil = until
+    if (model) {
+      acc.modelLimits ??= {}
+      acc.modelLimits[model] = until
+      // Keep limitedUntil as the account's max cooldown across models so
+      // existing status displays and the earliest-reset replay stay honest.
+      if (!acc.limitedUntil || acc.limitedUntil < until) acc.limitedUntil = until
+    } else {
+      acc.limitedUntil = until
+    }
     acc.lastError = `429${detail ? `: ${detail}` : ""}`
   }
-  log("warn", `cline-free: account ${name} hit 429 — cooling down until ${new Date(until).toISOString()}${detail ? ` (${detail})` : ""}`, {
-    accountId: id,
-    limitedUntil: until,
-  })
+  log(
+    "warn",
+    `cline-free: account ${name} hit 429${model ? ` on ${model}` : ""} — cooling down until ${new Date(until).toISOString()}${detail ? ` (${detail})` : ""}`,
+    { accountId: id, limitedUntil: until },
+  )
   void savePoolFile(pool).catch(() => {})
 }
 
@@ -1327,6 +1402,7 @@ function installFetchRouter(pool: PoolFile, log: Logger): void {
     const incomingAuth = headers.get("authorization") ?? ""
     const incomingToken = incomingAuth.replace(/^bearer\s+/i, "")
     const now = Date.now()
+    const reqModel = modelOfRequest(url, body)
     pruneLimits(pool, now)
 
     // First attempt keeps the loader-chosen identity; rotation only kicks
@@ -1369,14 +1445,16 @@ function installFetchRouter(pool: PoolFile, log: Logger): void {
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       let token: string
       let accountId: string | undefined
-      if (attempt === 0 && first) {
+      const firstAcc = first ? pool.accounts.find((a) => a.id === first.accountId) : undefined
+      const firstLimited = firstAcc ? (modelLimitUntil(firstAcc, reqModel) ?? 0) > now : false
+      if (attempt === 0 && first && !firstLimited) {
         ;({ token, accountId } = first)
       } else {
         if (attempt === 0 && !first && incomingToken) {
           // Unknown identity (manual header override): try it once as-is.
           token = incomingToken
         } else {
-          const next = selectAccount(pool, Date.now())
+          const next = selectAccount(pool, Date.now(), reqModel)
           if (!next) break
           const t = tokenOf(next)
           if (!t || tried.has(next.id)) continue
@@ -1447,10 +1525,11 @@ function installFetchRouter(pool: PoolFile, log: Logger): void {
               }
               if (res2.status === 429) {
                 const snippet2 = await readSnippet(res2)
+                const detail2 = cleanDetail(snippet2)
                 lastRes = keepForReturn(res2)
                 await drain(res).catch(() => {})
                 await drain(res2).catch(() => {})
-                markAccountLimited(pool, acc.id, parseRetryAfterMs(res2), log, cleanDetail(snippet2))
+                markAccountLimited(pool, acc.id, parseRetryAfterMs(res2) ?? parseRetryAfterFromBody(detail2), log, detail2, reqModel)
                 continue
               }
               const snippet2 = await readSnippet(res2)
@@ -1506,14 +1585,14 @@ function installFetchRouter(pool: PoolFile, log: Logger): void {
         return res
       }
 
-      // 429: note the snippet, park this account, try the next one.
+      // 429: note the snippet, park this account (per model), try the next.
       const snippet = await readSnippet(res)
       lastRes = keepForReturn(res)
       await drain(res).catch(() => {})
-      const retryAfter = parseRetryAfterMs(res)
+      const retryAfter = parseRetryAfterMs(res) ?? parseRetryAfterFromBody(cleanDetail(snippet))
       const detail = cleanDetail(snippet)
       if (accountId && pool.accounts.some((a) => a.id === accountId)) {
-        markAccountLimited(pool, accountId, retryAfter, log, detail)
+        markAccountLimited(pool, accountId, retryAfter, log, detail, reqModel)
       } else {
         log("warn", `cline-free: 429 on untracked identity (${maskToken(token)})${detail ? ` — ${detail}` : ""}`)
         break
@@ -1674,10 +1753,11 @@ const ClineFreePlugin: Plugin = async ({ client }) => {
         if (!picked) {
           const candidates = allCandidates(pool)
           if (candidates.length === 0) return {}
-          // Every account is cooling down: report when the first recovers
-          // instead of failing silently. The fetch router replays on the
-          // earliest account so the caller still sees the real 429 body.
-          const earliest = [...candidates].sort((a, b) => (a.limitedUntil ?? 0) - (b.limitedUntil ?? 0))[0]
+          // Every account is cooling down: hand the request to the fetch
+          // router with the earliest-reset account — it selects per model
+          // (accounts limited on THIS model still block, others qualify),
+          // so a 429 on glm doesn't block muse.
+          const earliest = [...candidates].sort((a, b) => (b.limitedUntil ?? 0) - (a.limitedUntil ?? 0))[0]
           const t = tokenOf(earliest)
           if (!t) return {}
           log("warn", `cline-free: all accounts cooling down — next reset ${new Date(earliest.limitedUntil ?? Date.now()).toISOString()}${describeLimits(pool)}`)
@@ -1879,11 +1959,20 @@ const ClineFreePlugin: Plugin = async ({ client }) => {
           // quarantined entries stay visible with their NEEDS-RELOGIN flag.
           const lines = pool.accounts.map((a) => {
             const t = tokenOf(a)
-            const limited = a.limitedUntil && a.limitedUntil > now
+            const now2 = Date.now()
+            const modelCd = a.modelLimits
+              ? Object.entries(a.modelLimits)
+                  .filter(([, until]) => until > now2)
+                  .map(([m, until]) => `${m}→${new Date(until).toISOString().slice(5, 16)}Z`)
+                  .sort()
+                  .join(", ")
+              : ""
+            const anyLimited = a.limitedUntil && a.limitedUntil > now2
             const quarantined = !!a.authFailedAt
             const flags = [
               a.id === pool.activeId ? "active" : "",
-              limited ? `COOLDOWN→${new Date(a.limitedUntil!).toISOString()}` : "",
+              modelCd || anyLimited ? "COOLDOWN" : "",
+              modelCd,
               quarantined ? `NEEDS-RELOGIN${a.authFailedReason ? ` (${a.authFailedReason.slice(0, 80)})` : ""}` : "",
               a.source,
             ]
@@ -1958,6 +2047,8 @@ export const __clineFreeTest = {
   quarantineAccount,
   withTransientRetries,
   fetchWithTimeout,
+  withWorkOSPrefix,
+  dedupePool,
   loadPoolFile,
   savePoolFile,
 }
