@@ -1283,12 +1283,14 @@ async function probeQuarantinedAccounts(pool: PoolFile, log: Logger): Promise<vo
 let rrCursor = 0
 
 /** Next healthy account in round-robin order; undefined when all limited.
- * With `model`, only accounts whose per-model quota is intact qualify. */
+ * An account is healthy only when its account-wide cooldown AND its cooldown
+ * for the requested model (if any) have both expired. */
 function selectAccount(pool: PoolFile, now = Date.now(), model?: string): PoolAccount | undefined {
   const candidates = allCandidates(pool)
   // Start scanning at the cursor, keyed on the full candidate order so
   // parallel requests spread across accounts.
   const healthy = candidates.filter((a) => {
+    if (a.limitedUntil && a.limitedUntil > now) return false
     const until = modelLimitUntil(a, model)
     return !until || until <= now
   })
@@ -1503,7 +1505,61 @@ function installFetchRouter(pool: PoolFile, log: Logger): void {
           return res
         }
         const detail = cleanDetail(snippet)
-        const acc = accountId ? pool.accounts.find((a) => a.id === accountId) : undefined
+        let acc = accountId ? pool.accounts.find((a) => a.id === accountId) : undefined
+        // Stale cached identity: OpenCode's provider instance keeps the
+        // loader's apiKey, so after the pool rotated a token (e.g. the
+        // silent refresh below), later requests still arrive with the old
+        // dead token — an identity findByToken no longer knows. Decode its
+        // JWT user key and match it back to the owning account instead of
+        // surfacing Cline's generic "re-authenticate" 401.
+        let staleCache = false
+        if (!acc) {
+          const ukey = clineUserKey(token)
+          const owner = ukey
+            ? pool.accounts.find(
+                (a) =>
+                  a.refresh &&
+                  tokenOf(a) &&
+                  sameAccount(tokenOf(a)!, token) &&
+                  (a.expires === undefined || a.expires - Date.now() > REFRESH_BUFFER_MS),
+              )
+            : undefined
+          if (owner) {
+            // The owner already holds a fresh token (rotated by an earlier
+            // recovery): replay with it directly — no refresh rotation burn.
+            staleCache = true
+            accountId = owner.id
+            acc = owner
+            log("info", `cline-free: stale cached token (${maskToken(token)}) matched to ${owner.label ?? owner.id} by user key — replaying with its current session`)
+          }
+        }
+        if (staleCache && acc) {
+          const current = tokenOf(acc)!
+          const h2 = new Headers(headers)
+          h2.set("authorization", `Bearer ${withWorkOSPrefix(current)}`)
+          const res2 = await origFetch(url, { method, headers: h2, body, signal })
+          if (res2.status !== 401 && res2.status !== 403 && res2.status !== 429) {
+            pool.activeId = acc.id
+            acc.lastUsed = Date.now()
+            void savePoolFile(pool).catch(() => {})
+            log("info", `cline-free: request recovered on ${acc.label ?? acc.id} with its current session (stale cached token)`)
+            await drain(res).catch(() => {})
+            return res2
+          }
+          if (res2.status === 429) {
+            const snippet2 = await readSnippet(res2)
+            const detail2 = cleanDetail(snippet2)
+            lastRes = keepForReturn(res2)
+            await drain(res).catch(() => {})
+            await drain(res2).catch(() => {})
+            markAccountLimited(pool, acc.id, parseRetryAfterMs(res2) ?? parseRetryAfterFromBody(detail2), log, detail2, reqModel)
+            continue
+          }
+          // Current token is dead too: fall through to the forced refresh.
+          lastAuthRes = keepForReturn(res2)
+          await drain(res).catch(() => {})
+          await drain(res2).catch(() => {})
+        }
         if (acc?.refresh && !refreshedInRequest.has(acc.id)) {
           refreshedInRequest.add(acc.id)
           try {
