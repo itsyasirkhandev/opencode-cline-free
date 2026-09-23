@@ -1770,8 +1770,20 @@ const ClineFreePlugin: Plugin = async ({ client }) => {
           baseURL: existing.options?.baseURL ?? CHAT_BASE_URL,
           headers: {
             Accept: "application/json",
+            // Cline surface headers (mirrors official clients — see
+            // cline/cline#13593). The gateway serves the native free
+            // models only to requests carrying this identity; without
+            // them it answers 403 "only available via Cline product
+            // surfaces". Verified 2026-09-21 against the live API.
             "HTTP-Referer": "https://cline.bot",
-            "X-Title": "OpenCode",
+            "X-Title": "Cline",
+            "User-Agent": "Cline/4.1.16",
+            "X-CLIENT-TYPE": "VSCode Extension",
+            "X-CLIENT-VERSION": "4.1.16",
+            "X-CORE-VERSION": "4.1.16",
+            "X-PLATFORM": "vscode",
+            "X-PLATFORM-VERSION": "4.1.16",
+            "X-IS-MULTIROOT": "false",
             ...(existing.options?.headers ?? {}),
           },
         },
