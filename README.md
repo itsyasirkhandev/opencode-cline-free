@@ -1,6 +1,6 @@
 # opencode-cline-free
 
-**v0.5.5** · Use Cline's rotating **free models** inside OpenCode with your Cline account —
+**v0.5.6** · Use Cline's rotating **free models** inside OpenCode with your Cline account —
 same quota you see tagged `FREE` in Cline VSCode/CLI.
 
 Live source: `GET https://api.cline.bot/api/v1/ai/cline/recommended-models`
@@ -11,9 +11,9 @@ automatically. Offline it falls back to a bundled list.
 
 | Model id | Notes |
 |---|---|
-| `stealth/space-bunny-alpha` | stealth preview (vendor anonymous), 1M context |
-| `cline-free/mimo-v2.6-flash` | Cline-only free, MiMo 2.6 (309B MoE) |
-| `cline-free/deepseek-v4.1-flash` | Cline-only free, native text+image input, 1M ctx / 384K out · low, high, max (no medium) |
+| `stealth/space-bunny-alpha` | stealth preview (vendor anonymous), 1M context · minimal, low, medium, high, xhigh, max |
+| `cline-free/mimo-v2.6-flash` | Cline-only free, MiMo 2.6 (309B MoE) · none, minimal, low, medium, high, xhigh, max (only `none` changes output) |
+| `cline-free/deepseek-v4.1-flash` | Cline-only free, native text+image input, 1M ctx / 384K out · none, minimal, low, medium, high, xhigh, max |
 | `cline-free/muse-spark-1.3-contributor` | Cline-only free · minimal, low, medium, high, xhigh (`max` fails server-side) |
 
 Rotated out of the free list (ids kept in the plugin as known/stale where useful):
@@ -180,7 +180,8 @@ npm publish --access public
 
 | Version | Changes |
 |---|---|
-| **0.5.5** | Refresh bundled free list + metadata for the 2026-09-24 rotation (space-bunny-alpha, mimo-v2.6-flash) |
+| **0.5.6** | Match per-model reasoning variants to the exact set the Cline gateway accepts (live-probed: added `xhigh`/`minimal`/`none` where accepted, dropped nothing valid) |
+| 0.5.5 | Refresh bundled free list + metadata for the 2026-09-24 rotation (space-bunny-alpha, mimo-v2.6-flash) |
 | 0.5.4 | Send Cline product surface headers — fixes `403 only available via Cline product surfaces` on native free models |
 | 0.5.x | `stealth/union-alpha` in free rotation + reasoning variants (low/medium/high/xhigh, medium default) |
 | — | Per-model 429 cooldowns; API-key accounts kept separate from OAuth |

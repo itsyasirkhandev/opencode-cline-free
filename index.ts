@@ -124,19 +124,24 @@ const INPUT_MODALITIES: Record<string, string[]> = {
   "poolside/laguna-s-2.1:free": ["text"],
 }
 
-// Valid reasoning efforts (live-probed / models.dev where available):
-// - space-bunny-alpha: adjustable reasoning_effort (low/medium/high/max)
-// - mimo-v2.6-flash: reasoning on, no reasoning_effort levels published → no variants
-// - deepseek-v4.1-flash: none/low/high/max (NO medium)
+// Valid reasoning efforts — live-probed against the Cline gateway (2026-09-24).
+// Each list is exactly the set the endpoint accepts for that free model.
+// space-bunny/muse answer 400 "Reasoning is mandatory for this endpoint and
+// cannot be disabled" for `none`, and Meta rejects `max` for muse as an
+// invalid parameter. mimo accepts the graded values but only `none` (off)
+// measurably changes output; the graded levels stay because they are accepted.
+// - space-bunny-alpha: minimal/low/medium/high/xhigh/max
+// - mimo-v2.6-flash: none/minimal/low/medium/high/xhigh/max (on/off effective)
+// - deepseek-v4.1-flash: none/minimal/low/medium/high/xhigh/max
 // - muse-spark-1.3: minimal/low/medium/high/xhigh (`max` → HTTP 500)
 // - glm: low/high/max; laguna: off/max only; union-alpha: low/medium/high/xhigh
 const VARIANTS: Record<string, string[]> = {
-  "stealth/space-bunny-alpha": ["low", "medium", "high", "max"],
-  "cline-free/mimo-v2.6-flash": [],
+  "stealth/space-bunny-alpha": ["minimal", "low", "medium", "high", "xhigh", "max"],
+  "cline-free/mimo-v2.6-flash": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
   "cline-free/muse-spark-1.3-contributor": ["minimal", "low", "medium", "high", "xhigh"],
   "stealth/union-alpha": ["low", "medium", "high", "xhigh"],
-  "cline-free/deepseek-v4.1-flash": ["low", "high", "max"],
-  "deepseek/deepseek-v4.1-flash": ["low", "high", "max"],
+  "cline-free/deepseek-v4.1-flash": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+  "deepseek/deepseek-v4.1-flash": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
   "deepseek/deepseek-v4-flash": ["low", "medium", "high", "max"],
   "z-ai/glm-5.3-flash": ["low", "high", "max"],
   "cline-free/solar-pro4": ["low", "medium", "high", "max"],
