@@ -13,9 +13,11 @@ import { tool } from "@opencode-ai/plugin"
  * - cline-free/mimo-v2.6-flash
  * - cline-free/deepseek-v4.1-flash
  * - cline-free/muse-spark-1.3-contributor
+ * Always registered even though absent from the live `free` array:
+ * z-ai/glm-5.3-flash (free via the account, billed $0 — verified on the usage
+ * dashboard 2026-09-24).
  * Rotated out (kept as known/stale ids where useful): stealth/union-alpha,
- * z-ai/glm-5.3-flash, cline-free/solar-pro4, poolside/laguna-s-2.1:free,
- * deepseek/deepseek-v4-flash.
+ * cline-free/solar-pro4, poolside/laguna-s-2.1:free, deepseek/deepseek-v4-flash.
  */
 
 const PROVIDER_ID = "cline-free"
@@ -74,6 +76,24 @@ const FALLBACK_FREE: FreeEntry[] = [
       "Meta's multimodal reasoning model for experimentation and agentic coding workflows.",
   },
 ]
+
+// Free through a Cline account but absent from the live recommended `free`
+// array: upstream advertises it as a paid/Pass id, yet the account is billed
+// $0 (verified on the usage dashboard 2026-09-24). Always registered, online
+// or offline, and deduped against the live list in case it ever joins it.
+const EXTRA_FREE: FreeEntry[] = [
+  {
+    id: "z-ai/glm-5.3-flash",
+    name: "GLM 5.3 Flash",
+    description:
+      "Z-AI GLM-5.3 Flash — free via your Cline account, not part of the live free rotation.",
+  },
+]
+
+function withExtraFree(entries: FreeEntry[]): FreeEntry[] {
+  const ids = new Set(entries.map((e) => e.id))
+  return [...entries, ...EXTRA_FREE.filter((e) => !ids.has(e.id))]
+}
 
 // Best-effort context/output limits (OpenCode only uses these for
 // budgeting/truncation; the server remains authoritative).
@@ -199,9 +219,9 @@ async function fetchFreeModels(timeoutMs = 12_000): Promise<FreeEntry[]> {
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const payload = (await res.json()) as RecommendedPayload
     const free = (payload.free ?? []).filter((m) => typeof m?.id === "string" && m.id.length > 0)
-    return free.length > 0 ? free : FALLBACK_FREE
+    return withExtraFree(free.length > 0 ? free : FALLBACK_FREE)
   } catch {
-    return FALLBACK_FREE
+    return withExtraFree(FALLBACK_FREE)
   } finally {
     clearTimeout(timer)
   }

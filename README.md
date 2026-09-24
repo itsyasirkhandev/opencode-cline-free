@@ -1,6 +1,6 @@
 # opencode-cline-free
 
-**v0.5.6** · Use Cline's rotating **free models** inside OpenCode with your Cline account —
+**v0.5.7** · Use Cline's rotating **free models** inside OpenCode with your Cline account —
 same quota you see tagged `FREE` in Cline VSCode/CLI.
 
 Live source: `GET https://api.cline.bot/api/v1/ai/cline/recommended-models`
@@ -16,10 +16,14 @@ automatically. Offline it falls back to a bundled list.
 | `cline-free/deepseek-v4.1-flash` | Cline-only free, native text+image input, 1M ctx / 384K out · none, minimal, low, medium, high, xhigh, max |
 | `cline-free/muse-spark-1.3-contributor` | Cline-only free · minimal, low, medium, high, xhigh (`max` fails server-side) |
 
+Always registered even though it is **not** in the live `free` array (free via the account, billed $0):
+
+- `z-ai/glm-5.3-flash` · low, high, max
+
 Rotated out of the free list (ids kept in the plugin as known/stale where useful):
 
 - `stealth/union-alpha` → replaced by `stealth/space-bunny-alpha`
-- `z-ai/glm-5.3-flash`, `cline-free/solar-pro4`, `poolside/laguna-s-2.1:free`
+- `cline-free/solar-pro4`, `poolside/laguna-s-2.1:free`
 - `deepseek/deepseek-v4-flash`
 
 Restart OpenCode after a Cline rotation so the live list refreshes.
@@ -180,7 +184,8 @@ npm publish --access public
 
 | Version | Changes |
 |---|---|
-| **0.5.6** | Match per-model reasoning variants to the exact set the Cline gateway accepts (live-probed: added `xhigh`/`minimal`/`none` where accepted, dropped nothing valid) |
+| **0.5.7** | Always register `z-ai/glm-5.3-flash` — free via the Cline account (billed $0) but absent from the live `free` array |
+| 0.5.6 | Match per-model reasoning variants to the exact set the Cline gateway accepts (live-probed: added `xhigh`/`minimal`/`none` where accepted, dropped nothing valid) |
 | 0.5.5 | Refresh bundled free list + metadata for the 2026-09-24 rotation (space-bunny-alpha, mimo-v2.6-flash) |
 | 0.5.4 | Send Cline product surface headers — fixes `403 only available via Cline product surfaces` on native free models |
 | 0.5.x | `stealth/union-alpha` in free rotation + reasoning variants (low/medium/high/xhigh, medium default) |
