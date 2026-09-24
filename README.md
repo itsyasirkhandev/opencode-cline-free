@@ -1,6 +1,6 @@
 # opencode-cline-free
 
-**v0.5.4** · Use Cline's rotating **free models** inside OpenCode with your Cline account —
+**v0.5.5** · Use Cline's rotating **free models** inside OpenCode with your Cline account —
 same quota you see tagged `FREE` in Cline VSCode/CLI.
 
 Live source: `GET https://api.cline.bot/api/v1/ai/cline/recommended-models`
@@ -155,7 +155,7 @@ npm publish --access public
   `provider.models` hooks for non-models.dev providers.)
   User-declared models in `opencode.json` always win; the plugin only adds
   missing free ids.
-- **Cline product surface headers** (v0.5.4): chat requests mirror the
+- **Cline product surface headers** (v0.5.4+): chat requests mirror the
   official client identity (`User-Agent: Cline/4.1.16`, `X-CLIENT-TYPE:
   VSCode Extension`, `X-CLIENT-VERSION`, `X-CORE-VERSION`, `X-PLATFORM*`,
   `X-IS-MULTIROOT`, `X-Title: Cline`). The gateway serves native free models
@@ -180,7 +180,8 @@ npm publish --access public
 
 | Version | Changes |
 |---|---|
-| **0.5.4** | Send Cline product surface headers — fixes `403 only available via Cline product surfaces` on native free models |
+| **0.5.5** | Refresh bundled free list + metadata for the 2026-09-24 rotation (space-bunny-alpha, mimo-v2.6-flash) |
+| 0.5.4 | Send Cline product surface headers — fixes `403 only available via Cline product surfaces` on native free models |
 | 0.5.x | `stealth/union-alpha` in free rotation + reasoning variants (low/medium/high/xhigh, medium default) |
 | — | Per-model 429 cooldowns; API-key accounts kept separate from OAuth |
 | — | Transparent 401/403 auth recovery (refresh + failover); stale cached token recovery by JWT user key |

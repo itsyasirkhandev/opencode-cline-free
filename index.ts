@@ -8,16 +8,14 @@ import { tool } from "@opencode-ai/plugin"
  * Cline account (same account/quota you see in Cline VSCode/CLI).
  *
  * Live list: GET https://api.cline.bot/api/v1/ai/cline/recommended-models
- * As of 2026-09-17 the `free` array is:
+ * As of 2026-09-24 the `free` array is:
+ * - stealth/space-bunny-alpha
+ * - cline-free/mimo-v2.6-flash
  * - cline-free/deepseek-v4.1-flash
- * - stealth/union-alpha
  * - cline-free/muse-spark-1.3-contributor
- * - z-ai/glm-5.3-flash
- * - cline-free/solar-pro4
- * - poolside/laguna-s-2.1:free
- * (glm-5.3-flash + laguna overlap with Zen, the other 4 are Cline-only free.)
- * Note: deepseek/deepseek-v4-flash (2026-09-13) has rotated out; kept as
- * a known id for stale configs.
+ * Rotated out (kept as known/stale ids where useful): stealth/union-alpha,
+ * z-ai/glm-5.3-flash, cline-free/solar-pro4, poolside/laguna-s-2.1:free,
+ * deepseek/deepseek-v4-flash.
  */
 
 const PROVIDER_ID = "cline-free"
@@ -52,37 +50,28 @@ type RecommendedPayload = {
 // Refreshed from the live endpoint on every startup (see fetchFreeModels).
 const FALLBACK_FREE: FreeEntry[] = [
   {
+    id: "stealth/space-bunny-alpha",
+    name: "Space Bunny Alpha",
+    description:
+      "Anonymous large model with blazing-fast inference, strong coding, native multimodal input, and 1M context.",
+  },
+  {
+    id: "cline-free/mimo-v2.6-flash",
+    name: "MiMo V2.6 Flash",
+    description:
+      "Xiaomi MiMo 2.6 Flash — 309B MoE (15B active), hybrid attention, multimodal.",
+  },
+  {
     id: "cline-free/deepseek-v4.1-flash",
     name: "DeepSeek V4.1 Flash",
     description:
       "Sparse MoE (CED architecture) with native image understanding and 1M context window.",
   },
   {
-    id: "stealth/union-alpha",
-    name: "Union Alpha",
-    description:
-      "Multimodal model built for research, coding, and agentic workflows.",
-  },
-  {
     id: "cline-free/muse-spark-1.3-contributor",
     name: "Muse Spark 1.3 Contributor",
     description:
       "Meta's multimodal reasoning model for experimentation and agentic coding workflows.",
-  },
-  {
-    id: "z-ai/glm-5.3-flash",
-    name: "GLM 5.3 Flash",
-    description: "Latest natively multimodal model in the GLM-5 series.",
-  },
-  {
-    id: "cline-free/solar-pro4",
-    name: "Solar Pro 4",
-    description: "Strong model for office productivity and coding.",
-  },
-  {
-    id: "poolside/laguna-s-2.1:free",
-    name: "Laguna S 2.1 (free)",
-    description: "Latest coding agent model from Poolside.",
   },
 ]
 
@@ -95,6 +84,8 @@ const FALLBACK_FREE: FreeEntry[] = [
 // injected cost uses input/output/cache_read for stats display with
 // cache_write 0 (no vendor publishes a write rate for these).
 const COSTS: Record<string, { input: number; output: number; cache_read: number }> = {
+  "stealth/space-bunny-alpha": { input: 0, output: 0, cache_read: 0 },
+  "cline-free/mimo-v2.6-flash": { input: 0.14, output: 0.28, cache_read: 0.0028 },
   "cline-free/muse-spark-1.3-contributor": { input: 0.1, output: 0.2, cache_read: 0.002 },
   "stealth/union-alpha": { input: 0, output: 0, cache_read: 0 },
   "cline-free/deepseek-v4.1-flash": { input: 0.1, output: 0.4, cache_read: 0.003 },
@@ -106,6 +97,8 @@ const COSTS: Record<string, { input: number; output: number; cache_read: number 
 }
 const DEFAULT_COST = { input: 0, output: 0, cache_read: 0 }
 const LIMITS: Record<string, { context: number; output: number }> = {
+  "stealth/space-bunny-alpha": { context: 1_000_000, output: 524_288 },
+  "cline-free/mimo-v2.6-flash": { context: 1_048_576, output: 131_072 },
   "cline-free/muse-spark-1.3-contributor": { context: 1_048_576, output: 131_072 },
   "stealth/union-alpha": { context: 262_144, output: 131_072 },
   "cline-free/deepseek-v4.1-flash": { context: 1_000_000, output: 384_000 },
@@ -117,11 +110,10 @@ const LIMITS: Record<string, { context: number; output: number }> = {
 }
 const DEFAULT_LIMIT = { context: 200_000, output: 32_000 }
 
-// Multimodal input per models.dev canonical entries; output is text-only.
-// - deepseek-v4.1-flash: text+image input (native vision, joint embeddings);
-//   the older v4-flash lane was text-only.
-// - muse-spark keeps video/audio/pdf per vendor docs (models.dev only says image).
+// Multimodal input per Cline /models architecture (output is text-only).
 const INPUT_MODALITIES: Record<string, string[]> = {
+  "stealth/space-bunny-alpha": ["text", "image", "video"],
+  "cline-free/mimo-v2.6-flash": ["text", "image", "video", "audio"],
   "cline-free/muse-spark-1.3-contributor": ["text", "image", "video", "audio", "pdf"],
   "stealth/union-alpha": ["text", "image"],
   "cline-free/deepseek-v4.1-flash": ["text", "image"],
@@ -132,18 +124,15 @@ const INPUT_MODALITIES: Record<string, string[]> = {
   "poolside/laguna-s-2.1:free": ["text"],
 }
 
-// Valid reasoning efforts:
-// - deepseek-v4.1-flash canonical reasoning_options (models.dev nano-gpt):
-//   none/low/high/max (NO medium — server maps/validates; v4-flash generic
-//   accepted low/medium/high/max on 2026-09-13 probes, keep for stale id).
-// - every other free model accepts low/medium/high/max EXCEPT
-//   muse-spark-1.3 (accepts minimal/low/medium/high/xhigh;
-//   `max` → HTTP 500 invalid_request_error from Meta via OpenRouter)
-// - glm officially documents low/high/max only (medium is accepted but
-//   mapped to max by the companion reasoning hook)
-// - laguna exposes only off/max (max is default) → no variants
-// - union-alpha accepts low/medium/high/xhigh (medium is the server default)
+// Valid reasoning efforts (live-probed / models.dev where available):
+// - space-bunny-alpha: adjustable reasoning_effort (low/medium/high/max)
+// - mimo-v2.6-flash: reasoning on, no reasoning_effort levels published → no variants
+// - deepseek-v4.1-flash: none/low/high/max (NO medium)
+// - muse-spark-1.3: minimal/low/medium/high/xhigh (`max` → HTTP 500)
+// - glm: low/high/max; laguna: off/max only; union-alpha: low/medium/high/xhigh
 const VARIANTS: Record<string, string[]> = {
+  "stealth/space-bunny-alpha": ["low", "medium", "high", "max"],
+  "cline-free/mimo-v2.6-flash": [],
   "cline-free/muse-spark-1.3-contributor": ["minimal", "low", "medium", "high", "xhigh"],
   "stealth/union-alpha": ["low", "medium", "high", "xhigh"],
   "cline-free/deepseek-v4.1-flash": ["low", "high", "max"],
