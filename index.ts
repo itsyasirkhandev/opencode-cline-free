@@ -14,8 +14,9 @@ import { tool } from "@opencode-ai/plugin"
  * - cline-free/deepseek-v4.1-flash
  * - cline-free/muse-spark-1.3-contributor
  * Always registered even though absent from the live `free` array:
- * z-ai/glm-5.3-flash (free via the account, billed $0 — verified on the usage
- * dashboard 2026-09-24).
+ * z-ai/glm-5.3-flash — NOT free. It bills Cline credits (verified 2026-09-24:
+ * the account balance drops by `creditsUsed`, unlike the free rotation which
+ * records 0).
  * Rotated out (kept as known/stale ids where useful): stealth/union-alpha,
  * cline-free/solar-pro4, poolside/laguna-s-2.1:free, deepseek/deepseek-v4-flash.
  */
@@ -41,7 +42,7 @@ const REFRESH_BUFFER_MS = 5 * 60 * 1000
 const ACCOUNTS_FILE_NAME = "cline-free-accounts.json"
 const DAY_MS = 24 * 60 * 60 * 1000
 
-type FreeEntry = { id: string; name?: string; description?: string }
+type FreeEntry = { id: string; name?: string; description?: string; paid?: boolean }
 type RecommendedPayload = {
   recommended?: FreeEntry[]
   free?: FreeEntry[]
@@ -77,22 +78,22 @@ const FALLBACK_FREE: FreeEntry[] = [
   },
 ]
 
-// Free through a Cline account but absent from the live recommended `free`
-// array: upstream advertises it as a paid/Pass id, yet the account is billed
-// $0 (verified on the usage dashboard 2026-09-24). Always registered, online
-// or offline, and deduped against the live list in case it ever joins it.
-const EXTRA_FREE: FreeEntry[] = [
+// Registered alongside the rotating free list even though it is neither free
+// nor present in the live recommended `free` array: z-ai/glm-5.3-flash bills
+// Cline credits (verified 2026-09-24 — the account balance drops by
+// `creditsUsed`, while the free rotation records 0). Kept available by request.
+const EXTRA_MODELS: FreeEntry[] = [
   {
     id: "z-ai/glm-5.3-flash",
     name: "GLM 5.3 Flash",
-    description:
-      "Z-AI GLM-5.3 Flash — free via your Cline account, not part of the live free rotation.",
+    description: "Z-AI GLM-5.3 Flash — bills Cline credits (not free).",
+    paid: true,
   },
 ]
 
-function withExtraFree(entries: FreeEntry[]): FreeEntry[] {
+function withExtraModels(entries: FreeEntry[]): FreeEntry[] {
   const ids = new Set(entries.map((e) => e.id))
-  return [...entries, ...EXTRA_FREE.filter((e) => !ids.has(e.id))]
+  return [...entries, ...EXTRA_MODELS.filter((e) => !ids.has(e.id))]
 }
 
 // Best-effort context/output limits (OpenCode only uses these for
@@ -186,6 +187,7 @@ function withWorkOSPrefix(token: string): string {
 
 function displayName(entry: FreeEntry): string {
   const base = (entry.name?.trim() || entry.id).trim()
+  if (entry.paid) return base.toLowerCase().includes("paid") ? base : `${base} (paid)`
   return base.toLowerCase().includes("free") ? base : `${base} (free)`
 }
 
@@ -219,9 +221,9 @@ async function fetchFreeModels(timeoutMs = 12_000): Promise<FreeEntry[]> {
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const payload = (await res.json()) as RecommendedPayload
     const free = (payload.free ?? []).filter((m) => typeof m?.id === "string" && m.id.length > 0)
-    return withExtraFree(free.length > 0 ? free : FALLBACK_FREE)
+    return withExtraModels(free.length > 0 ? free : FALLBACK_FREE)
   } catch {
-    return withExtraFree(FALLBACK_FREE)
+    return withExtraModels(FALLBACK_FREE)
   } finally {
     clearTimeout(timer)
   }
