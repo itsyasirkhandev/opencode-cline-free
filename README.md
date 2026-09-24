@@ -1,39 +1,42 @@
 # opencode-cline-free
 
-Use Cline's rotating **free models** inside OpenCode with your Cline account —
+**v0.5.4** · Use Cline's rotating **free models** inside OpenCode with your Cline account —
 same quota you see tagged `FREE` in Cline VSCode/CLI.
 
 Live source: `GET https://api.cline.bot/api/v1/ai/cline/recommended-models`
 (`free` array). The plugin fetches it on every startup, so rotations appear
 automatically. Offline it falls back to a bundled list.
 
-Current free rotation (2026-09-17):
+## Current free rotation (checked 2026-09-24)
 
 | Model id | Notes |
 |---|---|
-| `cline-free/deepseek-v4.1-flash` | Cline-only free, native text+image input, 1M ctx / 384K out | low, high, max (no medium) |
-| `stealth/union-alpha` | stealth preview (vendor anonymous), text+image input, 262K ctx / 128K out, tool calling | low, medium, high, xhigh (medium default) |
-| `cline-free/muse-spark-1.3-contributor` | Cline-only free | low, medium, high (`max` fails server-side) |
-| `z-ai/glm-5.3-flash` | also on Zen | low, high, max |
-| `cline-free/solar-pro4` | Cline-only free | low, medium, high, max |
-| `poolside/laguna-s-2.1:free` | also on Zen | vendor off/max only, max default (no variants) |
+| `stealth/space-bunny-alpha` | stealth preview (vendor anonymous), 1M context |
+| `cline-free/mimo-v2.6-flash` | Cline-only free, MiMo 2.6 (309B MoE) |
+| `cline-free/deepseek-v4.1-flash` | Cline-only free, native text+image input, 1M ctx / 384K out · low, high, max (no medium) |
+| `cline-free/muse-spark-1.3-contributor` | Cline-only free · minimal, low, medium, high, xhigh (`max` fails server-side) |
 
-Rotated out: `deepseek/deepseek-v4-flash`
-(previous rotation; id kept in the plugin as known/stale).
+Rotated out of the free list (ids kept in the plugin as known/stale where useful):
 
-So if `glm-5.3-flash` + `laguna` already work for you via Zen, this plugin
-adds the other 3.
+- `stealth/union-alpha` → replaced by `stealth/space-bunny-alpha`
+- `z-ai/glm-5.3-flash`, `cline-free/solar-pro4`, `poolside/laguna-s-2.1:free`
+- `deepseek/deepseek-v4-flash`
+
+Restart OpenCode after a Cline rotation so the live list refreshes.
 
 ## Install (local)
 
 ```bash
+git clone https://github.com/itsyasirkhandev/opencode-cline-free.git
+cd opencode-cline-free
+
 # global
 mkdir -p ~/.config/opencode/plugins
-cp code/opencode-cline-free/index.ts ~/.config/opencode/plugins/cline-free.ts
+cp index.ts ~/.config/opencode/plugins/cline-free.ts
 
 # or project-level
 mkdir -p .opencode/plugins
-cp code/opencode-cline-free/index.ts .opencode/plugins/cline-free.ts
+cp index.ts .opencode/plugins/cline-free.ts
 ```
 
 Restart OpenCode.
@@ -59,6 +62,9 @@ Free quota is per Cline account and resets daily. The plugin keeps a pool
 
 - **Loader** picks the next healthy account round-robin per request
   (limited accounts are skipped).
+- **Per-model cooldowns**: Cline's free caps are per user **and** model, so an
+  account exhausted on deepseek still has muse quota (and vice versa).
+  `429` bodies like `Try again in 1h 37m` are parsed to match the server.
 - **Fetch router**: if Cline answers `429` on a chat request, that account
   is parked until it recovers (`Retry-After` when the server sends one,
   otherwise next UTC midnight for the daily reset) and the **same request
@@ -67,11 +73,13 @@ Free quota is per Cline account and resets daily. The plugin keeps a pool
   get the same treatment: the dead account is refreshed once in place and
   replayed, otherwise it is quarantined (`NEEDS-RELOGIN` in
   `cline_free_status`) and the same request is retried on the next healthy
-  account. Only non-auth `403/5xx` pass through untouched so real permission
+  account. Stale cached tokens are recovered by JWT user key after rotation.
+  Only non-auth `403/5xx` pass through untouched so real permission
   problems and outages stay visible.
 - Cooldowns persist in the pool file, so they survive restarts.
 
-Add accounts three ways (they merge, deduped by token):
+Add accounts three ways (they merge, deduped by stable Cline user identity
+— not raw token — so re-login never creates duplicates):
 
 1. `/connect` → `cline-free` repeatedly (device flow / CLI import / manual).
 2. Env vars: `CLINE_API_KEY` / `CLINE_FREE_API_KEY`, lists via
@@ -94,7 +102,7 @@ Skip the browser? If this machine already has a Cline CLI login
 method 2 imports its OAuth tokens directly — the account email is shown,
 you just confirm, no browser code. Expired tokens are refreshed automatically.
 
-Manual alternative: `/connect` -> `cline-free` -> `Cline token (manual)` and
+Manual alternative: `/connect` → `cline-free` → `Cline token (manual)` and
 paste a `workos:...` token, or set:
 
 ```bash
@@ -122,12 +130,16 @@ or in `opencode.json`:
 
 > Note: model ids contain a `/` themselves (e.g. `cline-free/deepseek-v4.1-flash`),
 > so the full spec is `cline-free/cline-free/deepseek-v4.1-flash`.
-> `cline-free/...` ids are Cline-native free ids; `z-ai/...`,
-> `poolside/...:free` ride Cline usage-billing at $0.
-> The previous `deepseek/deepseek-v4-flash` id (`cline-free/deepseek/deepseek-v4-flash`)
-> has rotated out of the free list.
+> `cline-free/...` ids are Cline-native free ids; stealth ids ride the same
+> free quota at $0.
+> Stale ids (`deepseek/deepseek-v4-flash`, `z-ai/glm-5.3-flash`, etc.) may
+> still be in an old config after Cline rotates them out.
+
+See `opencode.example.json` for a minimal config snippet.
 
 ## Publish to npm (optional)
+
+Not published yet. When ready:
 
 ```bash
 npm publish --access public
@@ -141,6 +153,16 @@ npm publish --access public
   plus the live `free` models at $0 cost.
   (Config-hook injection is used because OpenCode currently skips
   `provider.models` hooks for non-models.dev providers.)
+  User-declared models in `opencode.json` always win; the plugin only adds
+  missing free ids.
+- **Cline product surface headers** (v0.5.4): chat requests mirror the
+  official client identity (`User-Agent: Cline/4.1.16`, `X-CLIENT-TYPE:
+  VSCode Extension`, `X-CLIENT-VERSION`, `X-CORE-VERSION`, `X-PLATFORM*`,
+  `X-IS-MULTIROOT`, `X-Title: Cline`). The gateway serves native free models
+  only to Cline product surfaces; without them it answers
+  `403 only available via Cline product surfaces`
+  ([cline/cline#13593](https://github.com/cline/cline/issues/13593)).
+  Verified 2026-09-21 against the live API.
 - `auth` hook implements Cline's WorkOS device-code OAuth
   (same flow as Pi's `pi-cline` extension) + manual token entry,
   refreshes via `/api/v1/auth/refresh`, and sends
@@ -154,10 +176,25 @@ npm publish --access public
 - Free quota is per Cline account and rotating/limited — when Cline rotates,
   restart OpenCode to refresh the list.
 
+## Changelog (high level)
+
+| Version | Changes |
+|---|---|
+| **0.5.4** | Send Cline product surface headers — fixes `403 only available via Cline product surfaces` on native free models |
+| 0.5.x | `stealth/union-alpha` in free rotation + reasoning variants (low/medium/high/xhigh, medium default) |
+| — | Per-model 429 cooldowns; API-key accounts kept separate from OAuth |
+| — | Transparent 401/403 auth recovery (refresh + failover); stale cached token recovery by JWT user key |
+| — | Production-grade OAuth: single-flight refresh, error classification, quarantine, atomic pool writes |
+| — | Multi-account pool with automatic 429 failover; same-user logins deduped by stable Cline identity |
+| — | Live free-model list, per-model reasoning variants, vendor-correct limits/cost display ($0) |
+
 ## Caveats
 
-- Cline docs say free models are officially for IDE Extension/CLI; this
-  reuses the same account API + OAuth the community Pi extensions use.
-  If Cline returns `403`, re-login (`/connect`), and check your free quota
-  in the Cline dashboard.
+- Cline docs say free models are officially for IDE Extension/CLI. This
+  plugin reuses the same account API + OAuth the community Pi extensions
+  use, and **impersonates the official client surface headers** so the
+  gateway accepts native free ids. If Cline still returns `403`, re-login
+  (`/connect`) and check your free quota in the Cline dashboard.
 - The WorkOS client id is Cline's public OAuth client (same as Pi extension).
+- Free list rotates without notice — trust the live endpoint over any
+  table in this README.
