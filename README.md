@@ -1,17 +1,19 @@
 # opencode-cline-free
 
-**v0.5.8** · Use Cline's rotating **free models** inside OpenCode with your Cline account —
+**v0.5.9** · Use Cline's rotating **free models** inside OpenCode with your Cline account —
 same quota you see tagged `FREE` in Cline VSCode/CLI.
 
 Live source: `GET https://api.cline.bot/api/v1/ai/cline/recommended-models`
 (`free` array). The plugin fetches it on every startup, so rotations appear
 automatically. Offline it falls back to a bundled list.
 
-## Current free rotation (checked 2026-09-24)
+## Current free rotation (checked 2026-09-26)
 
 | Model id | Notes |
 |---|---|
+| `stealth/pixel-canary` | stealth preview (vendor anonymous), strong coding · minimal, low, medium, high, xhigh, max (context/modalities not published yet — conservative defaults) |
 | `stealth/space-bunny-alpha` | stealth preview (vendor anonymous), 1M context · minimal, low, medium, high, xhigh, max |
+| `cline-free/gemini-3.8-flash` | Cline-only free · low, medium, high · 1M ctx / 64K out, text+image+video+audio+pdf input |
 | `cline-free/mimo-v2.6-flash` | Cline-only free, MiMo 2.6 (309B MoE) · none, minimal, low, medium, high, xhigh, max (only `none` changes output) |
 | `cline-free/deepseek-v4.1-flash` | Cline-only free, native text+image input, 1M ctx / 384K out · none, minimal, low, medium, high, xhigh, max |
 | `cline-free/muse-spark-1.3-contributor` | Cline-only free · minimal, low, medium, high, xhigh (`max` fails server-side) |
@@ -184,7 +186,8 @@ npm publish --access public
 
 | Version | Changes |
 |---|---|
-| **0.5.8** | Correct: `z-ai/glm-5.3-flash` is **not** free — it bills Cline credits (balance drops by `creditsUsed`). Still auto-registered, now labelled `(paid)` |
+| **0.5.9** | `stealth/pixel-canary` + `cline-free/gemini-3.8-flash` join the free rotation with effort variants, limits, and multimodal input mapped |
+| 0.5.8 | Correct: `z-ai/glm-5.3-flash` is **not** free — it bills Cline credits (balance drops by `creditsUsed`). Still auto-registered, now labelled `(paid)` |
 | 0.5.7 | Register `z-ai/glm-5.3-flash` (absent from the live `free` array). Free status was wrong — corrected in 0.5.8 |
 | 0.5.6 | Match per-model reasoning variants to the exact set the Cline gateway accepts (live-probed: added `xhigh`/`minimal`/`none` where accepted, dropped nothing valid) |
 | 0.5.5 | Refresh bundled free list + metadata for the 2026-09-24 rotation (space-bunny-alpha, mimo-v2.6-flash) |

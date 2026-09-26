@@ -8,8 +8,10 @@ import { tool } from "@opencode-ai/plugin"
  * Cline account (same account/quota you see in Cline VSCode/CLI).
  *
  * Live list: GET https://api.cline.bot/api/v1/ai/cline/recommended-models
- * As of 2026-09-24 the `free` array is:
+ * As of 2026-09-26 the `free` array is:
+ * - stealth/pixel-canary
  * - stealth/space-bunny-alpha
+ * - cline-free/gemini-3.8-flash
  * - cline-free/mimo-v2.6-flash
  * - cline-free/deepseek-v4.1-flash
  * - cline-free/muse-spark-1.3-contributor
@@ -53,10 +55,21 @@ type RecommendedPayload = {
 // Refreshed from the live endpoint on every startup (see fetchFreeModels).
 const FALLBACK_FREE: FreeEntry[] = [
   {
+    id: "stealth/pixel-canary",
+    name: "Pixel Canary",
+    description:
+      "Anonymous large model with strong coding capabilities.",
+  },
+  {
     id: "stealth/space-bunny-alpha",
     name: "Space Bunny Alpha",
     description:
       "Anonymous large model with blazing-fast inference, strong coding, native multimodal input, and 1M context.",
+  },
+  {
+    id: "cline-free/gemini-3.8-flash",
+    name: "Gemini 3.8 Flash",
+    description: "Google's most intelligent Flash model.",
   },
   {
     id: "cline-free/mimo-v2.6-flash",
@@ -106,6 +119,7 @@ function withExtraModels(entries: FreeEntry[]): FreeEntry[] {
 // cache_write 0 (no vendor publishes a write rate for these).
 const COSTS: Record<string, { input: number; output: number; cache_read: number }> = {
   "stealth/space-bunny-alpha": { input: 0, output: 0, cache_read: 0 },
+  "cline-free/gemini-3.8-flash": { input: 0.75, output: 3.75, cache_read: 0.075 },
   "cline-free/mimo-v2.6-flash": { input: 0.14, output: 0.28, cache_read: 0.0028 },
   "cline-free/muse-spark-1.3-contributor": { input: 0.1, output: 0.2, cache_read: 0.002 },
   "stealth/union-alpha": { input: 0, output: 0, cache_read: 0 },
@@ -119,6 +133,7 @@ const COSTS: Record<string, { input: number; output: number; cache_read: number 
 const DEFAULT_COST = { input: 0, output: 0, cache_read: 0 }
 const LIMITS: Record<string, { context: number; output: number }> = {
   "stealth/space-bunny-alpha": { context: 1_000_000, output: 524_288 },
+  "cline-free/gemini-3.8-flash": { context: 1_048_576, output: 65_536 },
   "cline-free/mimo-v2.6-flash": { context: 1_048_576, output: 131_072 },
   "cline-free/muse-spark-1.3-contributor": { context: 1_048_576, output: 131_072 },
   "stealth/union-alpha": { context: 262_144, output: 131_072 },
@@ -134,6 +149,7 @@ const DEFAULT_LIMIT = { context: 200_000, output: 32_000 }
 // Multimodal input per Cline /models architecture (output is text-only).
 const INPUT_MODALITIES: Record<string, string[]> = {
   "stealth/space-bunny-alpha": ["text", "image", "video"],
+  "cline-free/gemini-3.8-flash": ["text", "image", "video", "audio", "pdf"],
   "cline-free/mimo-v2.6-flash": ["text", "image", "video", "audio"],
   "cline-free/muse-spark-1.3-contributor": ["text", "image", "video", "audio", "pdf"],
   "stealth/union-alpha": ["text", "image"],
@@ -145,7 +161,14 @@ const INPUT_MODALITIES: Record<string, string[]> = {
   "poolside/laguna-s-2.1:free": ["text"],
 }
 
-// Valid reasoning efforts — live-probed against the Cline gateway (2026-09-24).
+// Valid reasoning efforts — live-probed against the Cline gateway (2026-09-24,
+// rechecked for the 2026-09-26 rotation).
+// - pixel-canary: minimal/low/medium/high/xhigh/max (no `none`; context and
+//   input modalities are not published yet, so conservative defaults apply)
+// - gemini-3.8-flash: low/medium/high (model metadata: mandatory reasoning,
+//   default medium)
+// - space-bunny-alpha: minimal/low/medium/high/xhigh/max
+// - mimo-v2.6-flash: none/minimal/low/medium/high/xhigh/max (on/off effective)
 // Each list is exactly the set the endpoint accepts for that free model.
 // space-bunny/muse answer 400 "Reasoning is mandatory for this endpoint and
 // cannot be disabled" for `none`, and Meta rejects `max` for muse as an
@@ -157,7 +180,9 @@ const INPUT_MODALITIES: Record<string, string[]> = {
 // - muse-spark-1.3: minimal/low/medium/high/xhigh (`max` → HTTP 500)
 // - glm: low/high/max; laguna: off/max only; union-alpha: low/medium/high/xhigh
 const VARIANTS: Record<string, string[]> = {
+  "stealth/pixel-canary": ["minimal", "low", "medium", "high", "xhigh", "max"],
   "stealth/space-bunny-alpha": ["minimal", "low", "medium", "high", "xhigh", "max"],
+  "cline-free/gemini-3.8-flash": ["low", "medium", "high"],
   "cline-free/mimo-v2.6-flash": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
   "cline-free/muse-spark-1.3-contributor": ["minimal", "low", "medium", "high", "xhigh"],
   "stealth/union-alpha": ["low", "medium", "high", "xhigh"],
