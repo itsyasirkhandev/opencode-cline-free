@@ -1,6 +1,6 @@
 # opencode-cline-free
 
-**v0.5.10** · Use Cline's rotating **free models** inside OpenCode with your Cline account —
+**v0.6.0** · Use Cline's rotating **free models** inside OpenCode with your Cline account —
 same quota you see tagged `FREE` in Cline VSCode/CLI.
 
 Live source: `GET https://api.cline.bot/api/v1/ai/cline/recommended-models`
@@ -37,11 +37,11 @@ cd opencode-cline-free
 
 # global
 mkdir -p ~/.config/opencode/plugins
-cp index.ts ~/.config/opencode/plugins/cline-free.ts
+cp dist/cline-free.js ~/.config/opencode/plugins/cline-free.js
 
 # or project-level
 mkdir -p .opencode/plugins
-cp index.ts .opencode/plugins/cline-free.ts
+cp dist/cline-free.js .opencode/plugins/cline-free.js
 ```
 
 Restart OpenCode.
@@ -142,6 +142,31 @@ or in `opencode.json`:
 
 See `opencode.example.json` for a minimal config snippet.
 
+## Development
+
+Source lives in `src/` (one file per concern); `dist/cline-free.js` is the
+single-file bundle for copy-installs and is committed.
+
+| File | Purpose |
+|---|---|
+| `src/models.ts` | one registry with every model's name, status (free/paid/stale), cost, limits, inputs, reasoning efforts |
+| `src/modelList.ts` | live free list + on-disk cache (`cline-free-models.json`, override `CLINE_FREE_MODELS_FILE`) |
+| `src/http.ts` / `src/auth.ts` | timeouts, retry classification, device-code login, token refresh |
+| `src/pool.ts` | account pool, rotation, cooldowns, cross-process lock |
+| `src/router.ts` | provider-scoped fetch with 429/401 failover |
+| `src/plugin.ts` | OpenCode hooks, login methods, tools |
+
+```bash
+npm ci
+npm run typecheck
+npm test
+npm run build   # rebuild dist/ before committing
+npm run check   # all three
+```
+
+CI (`.github/workflows/ci.yml`) runs these on every push and pull request and
+fails if `dist/` is out of date.
+
 ## Publish to npm (optional)
 
 Not published yet. When ready:
@@ -185,6 +210,7 @@ npm publish --access public
 
 | Version | Changes |
 |---|---|
+| **0.6.0** | Split into `src/` modules + bundled `dist/cline-free.js`; single model registry; provider-scoped fetch (no global `fetch` patch); last good model list cached on disk and refreshed in the background; fair per-model rotation; lock heartbeat so slow refreshes are not broken as stale; paid models never fail over/replay on another account; tests, CI and npm scripts |
 | **0.5.10** | Sync free rotation (2026-10-04): `stealth/pixel-canary` and `cline-free/gemini-3.8-flash` rotated out; offline fallback now matches the live list (deepseek-v4.1-flash, space-bunny-alpha, mimo-v2.6-flash, muse-spark-1.3-contributor) |
 | **0.5.9** | `stealth/pixel-canary` + `cline-free/gemini-3.8-flash` join the free rotation with effort variants, limits, and multimodal input mapped |
 | 0.5.8 | Correct: `z-ai/glm-5.3-flash` is **not** free — it bills Cline credits (balance drops by `creditsUsed`). Still auto-registered, now labelled `(paid)` |
