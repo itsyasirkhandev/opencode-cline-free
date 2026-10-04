@@ -8,19 +8,18 @@ import { tool } from "@opencode-ai/plugin"
  * Cline account (same account/quota you see in Cline VSCode/CLI).
  *
  * Live list: GET https://api.cline.bot/api/v1/ai/cline/recommended-models
- * As of 2026-09-26 the `free` array is:
- * - stealth/pixel-canary
- * - stealth/space-bunny-alpha
- * - cline-free/gemini-3.8-flash
- * - cline-free/mimo-v2.6-flash
+ * As of 2026-10-04 the `free` array is:
  * - cline-free/deepseek-v4.1-flash
+ * - stealth/space-bunny-alpha
+ * - cline-free/mimo-v2.6-flash
  * - cline-free/muse-spark-1.3-contributor
  * Always registered even though absent from the live `free` array:
  * z-ai/glm-5.3-flash — NOT free. It bills Cline credits (verified 2026-09-24:
  * the account balance drops by `creditsUsed`, unlike the free rotation which
  * records 0).
- * Rotated out (kept as known/stale ids where useful): stealth/union-alpha,
- * cline-free/solar-pro4, poolside/laguna-s-2.1:free, deepseek/deepseek-v4-flash.
+ * Rotated out (kept as known/stale ids where useful): stealth/pixel-canary,
+ * cline-free/gemini-3.8-flash, stealth/union-alpha, cline-free/solar-pro4,
+ * poolside/laguna-s-2.1:free, deepseek/deepseek-v4-flash.
  */
 
 const PROVIDER_ID = "cline-free"
@@ -55,10 +54,10 @@ type RecommendedPayload = {
 // Refreshed from the live endpoint on every startup (see fetchFreeModels).
 const FALLBACK_FREE: FreeEntry[] = [
   {
-    id: "stealth/pixel-canary",
-    name: "Pixel Canary",
+    id: "cline-free/deepseek-v4.1-flash",
+    name: "DeepSeek V4.1 Flash",
     description:
-      "Anonymous large model with strong coding capabilities.",
+      "Sparse MoE (CED architecture) with native image understanding and 1M context window.",
   },
   {
     id: "stealth/space-bunny-alpha",
@@ -67,21 +66,10 @@ const FALLBACK_FREE: FreeEntry[] = [
       "Anonymous large model with blazing-fast inference, strong coding, native multimodal input, and 1M context.",
   },
   {
-    id: "cline-free/gemini-3.8-flash",
-    name: "Gemini 3.8 Flash",
-    description: "Google's most intelligent Flash model.",
-  },
-  {
     id: "cline-free/mimo-v2.6-flash",
     name: "MiMo V2.6 Flash",
     description:
       "Xiaomi MiMo 2.6 Flash — 309B MoE (15B active), hybrid attention, multimodal.",
-  },
-  {
-    id: "cline-free/deepseek-v4.1-flash",
-    name: "DeepSeek V4.1 Flash",
-    description:
-      "Sparse MoE (CED architecture) with native image understanding and 1M context window.",
   },
   {
     id: "cline-free/muse-spark-1.3-contributor",
@@ -162,7 +150,8 @@ const INPUT_MODALITIES: Record<string, string[]> = {
 }
 
 // Valid reasoning efforts — live-probed against the Cline gateway (2026-09-24,
-// rechecked for the 2026-09-26 rotation).
+// rechecked for the 2026-09-26 rotation; pixel-canary and gemini-3.8-flash
+// rotated out on 2026-10-04 and are kept below as stale ids).
 // - pixel-canary: minimal/low/medium/high/xhigh/max (no `none`; context and
 //   input modalities are not published yet, so conservative defaults apply)
 // - gemini-3.8-flash: low/medium/high (model metadata: mandatory reasoning,
