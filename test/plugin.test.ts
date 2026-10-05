@@ -8,7 +8,7 @@ import { FALLBACK_FREE, EXTRA_MODELS, MODELS, displayName, isPaidModel, modelCon
 import { classifyHttpFailure, TerminalAuthError, TransientAuthError } from "../src/http.ts"
 import { selectAccount, withFileLock, type PoolFile, type Logger } from "../src/pool.ts"
 import { createRoutedFetch } from "../src/router.ts"
-import { loadFreeModels, readModelsCache, writeModelsCache } from "../src/modelList.ts"
+import { loadFreeModels, matchMetadata, readModelsCache, writeModelsCache } from "../src/modelList.ts"
 
 const log: Logger = () => {}
 
@@ -38,7 +38,6 @@ test("fallback list matches the current free rotation", () => {
   assert.deepEqual(
     FALLBACK_FREE.map((m) => m.id).sort(),
     [
-      "cline-free/deepseek-v4.1-flash",
       "cline-free/mimo-v2.6-flash",
       "cline-free/muse-spark-1.3-contributor",
       "stealth/space-bunny-alpha",
@@ -179,7 +178,7 @@ test("model list: cache round-trip, background refresh, offline fallback", async
     assert.ok(offline.entries.some((e) => e.id === "z-ai/glm-5.3-flash"))
 
     await writeModelsCache([{ id: "cline-free/mimo-v2.6-flash" }])
-    assert.deepEqual((await readModelsCache())?.map((e) => e.id), ["cline-free/mimo-v2.6-flash"])
+    assert.deepEqual((await readModelsCache())?.entries.map((e) => e.id), ["cline-free/mimo-v2.6-flash"])
 
     globalThis.fetch = (async () =>
       new Response(JSON.stringify({ free: [{ id: "stealth/new-model" }] }), { status: 200 })) as typeof fetch
@@ -187,9 +186,33 @@ test("model list: cache round-trip, background refresh, offline fallback", async
     assert.equal(cached.source, "cache")
     assert.equal(cached.entries[0].id, "cline-free/mimo-v2.6-flash")
     const fresh = await cached.refreshed
-    assert.equal(fresh?.[0].id, "stealth/new-model")
-    assert.equal((await readModelsCache())?.[0].id, "stealth/new-model")
+    assert.equal(fresh?.entries[0].id, "stealth/new-model")
+    assert.equal((await readModelsCache())?.entries[0].id, "stealth/new-model")
   } finally {
     globalThis.fetch = realFetch
   }
+})
+
+test("deepseek v4.1 flash is no longer in the free fallback", () => {
+  assert.equal(FALLBACK_FREE.some((m) => m.id.includes("deepseek")), false)
+  assert.equal(MODELS["cline-free/deepseek-v4.1-flash"].status, "stale")
+})
+
+test("new free models get metadata automatically from the catalog", () => {
+  const catalog = [
+    { id: "xiaomi/brand-new-flash", context_length: 500_000, architecture: { input_modalities: ["text", "file"] },
+      top_provider: { context_length: 500_000, max_completion_tokens: 64_000 },
+      pricing: { prompt: "0.0000002", completion: "0.0000008" }, supported_parameters: ["tools"] },
+    { id: "stealth/exact-id", context_length: 1_000_000, supported_parameters: ["reasoning_effort"] },
+  ]
+  const meta = matchMetadata(["cline-free/brand-new-flash", "stealth/exact-id", "x/missing"], catalog)
+  assert.deepEqual(meta["cline-free/brand-new-flash"].limit, { context: 500_000, output: 64_000 })
+  assert.deepEqual(meta["cline-free/brand-new-flash"].input, ["text", "pdf"])
+  assert.equal(meta["cline-free/brand-new-flash"].cost?.input, 0.2)
+  assert.equal(meta["x/missing"], undefined)
+  const cfg = modelConfig({ id: "cline-free/brand-new-flash" }, meta["cline-free/brand-new-flash"])
+  assert.equal(cfg.limit.context, 500_000)
+  assert.equal("variants" in cfg, false) // catalog says no reasoning params
+  const r = modelConfig({ id: "stealth/exact-id" }, meta["stealth/exact-id"])
+  assert.deepEqual(Object.keys(r.variants ?? {}), ["low", "medium", "high"])
 })

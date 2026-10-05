@@ -5,8 +5,7 @@
  * Cline account (same account/quota you see in Cline VSCode/CLI).
  *
  * Live list: GET https://api.cline.bot/api/v1/ai/cline/recommended-models
- * As of 2026-10-04 the `free` array is:
- * - cline-free/deepseek-v4.1-flash
+ * As of 2026-10-05 the `free` array is:
  * - stealth/space-bunny-alpha
  * - cline-free/mimo-v2.6-flash
  * - cline-free/muse-spark-1.3-contributor
@@ -14,7 +13,8 @@
  * z-ai/glm-5.3-flash — NOT free. It bills Cline credits (verified 2026-09-24:
  * the account balance drops by `creditsUsed`, unlike the free rotation which
  * records 0).
- * Rotated out (kept as known/stale ids where useful): stealth/pixel-canary,
+ * Rotated out (kept as known/stale ids where useful): cline-free/deepseek-v4.1-flash,
+ * stealth/pixel-canary,
  * cline-free/gemini-3.8-flash, stealth/union-alpha, cline-free/solar-pro4,
  * poolside/laguna-s-2.1:free, deepseek/deepseek-v4-flash.
  */

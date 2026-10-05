@@ -315,20 +315,11 @@ async function validateClineToken(accessToken) {
 var DEFAULT_COST = { input: 0, output: 0, cache_read: 0 };
 var DEFAULT_LIMIT = { context: 2e5, output: 32e3 };
 var DEFAULT_INPUT = ["text"];
-var DEFAULT_VARIANTS = ["low", "medium", "high", "max"];
+var DEFAULT_VARIANTS = ["low", "medium", "high"];
 var FULL = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 var NO_NONE = ["minimal", "low", "medium", "high", "xhigh", "max"];
 var MODELS = {
-  // --- Current free rotation (checked 2026-10-04) ---
-  "cline-free/deepseek-v4.1-flash": {
-    name: "DeepSeek V4.1 Flash",
-    description: "Sparse MoE (CED architecture) with native image understanding and 1M context window.",
-    status: "free",
-    cost: { input: 0.1, output: 0.4, cache_read: 3e-3 },
-    limit: { context: 1e6, output: 384e3 },
-    input: ["text", "image"],
-    variants: FULL
-  },
+  // --- Current free rotation (checked 2026-10-05) ---
   "stealth/space-bunny-alpha": {
     name: "Space Bunny Alpha",
     description: "Anonymous large model with blazing-fast inference, strong coding, native multimodal input, and 1M context.",
@@ -368,6 +359,16 @@ var MODELS = {
     variants: ["low", "high", "max"]
   },
   // --- Rotated out (kept so metadata is right if they return) ---
+  // Left the free list on 2026-10-05; Cline now lists it at paid rates.
+  "cline-free/deepseek-v4.1-flash": {
+    name: "DeepSeek V4.1 Flash",
+    description: "Sparse MoE (CED architecture) with native image understanding and 1M context window.",
+    status: "stale",
+    cost: { input: 0.3, output: 1.2, cache_read: 6e-3 },
+    limit: { context: 1e6, output: 384e3 },
+    input: ["text", "image"],
+    variants: FULL
+  },
   "stealth/pixel-canary": {
     name: "Pixel Canary",
     description: "Anonymous large model with strong coding capabilities.",
@@ -396,7 +397,7 @@ var MODELS = {
   "deepseek/deepseek-v4.1-flash": {
     name: "DeepSeek V4.1 Flash",
     status: "stale",
-    cost: { input: 0.1, output: 0.4, cache_read: 3e-3 },
+    cost: { input: 0.3, output: 1.2, cache_read: 6e-3 },
     limit: { context: 1e6, output: 384e3 },
     input: ["text", "image"],
     variants: FULL
@@ -443,17 +444,17 @@ function displayName(entry) {
   if (entry.paid || isPaidModel(entry.id)) return base.toLowerCase().includes("paid") ? base : `${base} (paid)`;
   return base.toLowerCase().includes("free") ? base : `${base} (free)`;
 }
-function modelConfig(entry) {
+function modelConfig(entry, auto) {
   const spec = MODELS[entry.id];
-  const limit = spec?.limit ?? DEFAULT_LIMIT;
-  const levels = spec?.variants ?? DEFAULT_VARIANTS;
-  const cost = spec?.cost ?? DEFAULT_COST;
+  const limit = spec?.limit ?? auto?.limit ?? DEFAULT_LIMIT;
+  const levels = spec?.variants ?? (auto?.reasoning === false ? [] : DEFAULT_VARIANTS);
+  const cost = spec?.cost ?? auto?.cost ?? DEFAULT_COST;
   const variants = {};
   for (const level of levels) variants[level] = { reasoningEffort: level };
   return {
     name: displayName(entry),
     limit: { context: limit.context, output: limit.output },
-    modalities: { input: spec?.input ?? DEFAULT_INPUT, output: ["text"] },
+    modalities: { input: spec?.input ?? auto?.input ?? DEFAULT_INPUT, output: ["text"] },
     tool_call: true,
     reasoning: true,
     cost: { input: cost.input, output: cost.output, cache_read: cost.cache_read, cache_write: 0 },
@@ -1042,6 +1043,7 @@ function describeLimits(pool) {
 }
 
 // src/modelList.ts
+var CATALOG_URL = `${API_BASE}/api/v1/ai/cline/models`;
 var MODELS_CACHE_FILE_NAME = "cline-free-models.json";
 function modelsCachePath() {
   const override = process.env.CLINE_FREE_MODELS_FILE?.trim();
@@ -1054,40 +1056,84 @@ function validEntries(list) {
   if (!Array.isArray(list)) return [];
   return list.filter((m) => typeof m?.id === "string" && m.id.length > 0);
 }
-async function fetchLiveFreeModels(timeoutMs = 12e3) {
+async function getJson(url, timeoutMs) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const res = await fetch(RECOMMENDED_URL, {
+    const res = await fetch(url, {
       signal: ctrl.signal,
       headers: { Accept: "application/json", "User-Agent": "opencode-cline-free" }
     });
     if (!res.ok) return void 0;
-    const free = validEntries((await res.json()).free);
-    return free.length > 0 ? free : void 0;
+    return await res.json();
   } catch {
     return void 0;
   } finally {
     clearTimeout(timer);
   }
 }
+async function fetchLiveFreeModels(timeoutMs = 12e3) {
+  const payload = await getJson(RECOMMENDED_URL, timeoutMs);
+  const free = validEntries(payload?.free);
+  return free.length > 0 ? free : void 0;
+}
+var perMillion = (v) => {
+  const n = v === void 0 ? NaN : Number(v);
+  return Number.isFinite(n) ? Math.round(n * 1e6 * 1e6) / 1e6 : void 0;
+};
+function toAutoMeta(m) {
+  const context = m.top_provider?.context_length ?? m.context_length;
+  const output = m.top_provider?.max_completion_tokens;
+  const input = m.architecture?.input_modalities?.map((x) => x === "file" ? "pdf" : x);
+  const pIn = perMillion(m.pricing?.prompt);
+  const pOut = perMillion(m.pricing?.completion);
+  const params = m.supported_parameters;
+  return {
+    ...context && context > 0 ? { limit: { context, output: output && output > 0 ? Math.min(output, context) : 32e3 } } : {},
+    ...input && input.length > 0 ? { input } : {},
+    ...pIn !== void 0 && pOut !== void 0 ? { cost: { input: pIn, output: pOut, cache_read: perMillion(m.pricing?.input_cache_read) ?? 0 } } : {},
+    ...Array.isArray(params) ? { reasoning: params.includes("reasoning") || params.includes("reasoning_effort") } : {}
+  };
+}
+function matchMetadata(ids, catalog) {
+  const byId = /* @__PURE__ */ new Map();
+  const byName = /* @__PURE__ */ new Map();
+  for (const m of catalog) {
+    if (typeof m?.id !== "string") continue;
+    byId.set(m.id, m);
+    const name = m.id.split("/").pop();
+    if (!name.includes(":") && !byName.has(name)) byName.set(name, m);
+  }
+  const out = {};
+  for (const id of ids) {
+    const name = id.split("/").pop().replace(/:free$/, "");
+    const row = byId.get(id) ?? byName.get(name);
+    if (row) out[id] = toAutoMeta(row);
+  }
+  return out;
+}
+async function fetchCatalogMetadata(ids, timeoutMs = 12e3) {
+  const payload = await getJson(CATALOG_URL, timeoutMs);
+  const rows = Array.isArray(payload) ? payload : Array.isArray(payload?.data) ? payload.data : [];
+  return matchMetadata(ids, rows);
+}
 async function readModelsCache() {
   try {
     const { readFile } = await import("node:fs/promises");
     const data = JSON.parse(await readFile(modelsCachePath(), "utf8"));
     const free = validEntries(data.free);
-    return free.length > 0 ? free : void 0;
+    return free.length > 0 ? { entries: free, meta: data.meta ?? {} } : void 0;
   } catch {
     return void 0;
   }
 }
-async function writeModelsCache(free) {
+async function writeModelsCache(free, meta = {}) {
   const { mkdir, writeFile, rename, unlink } = await import("node:fs/promises");
   const { dirname } = await import("node:path");
   const file = modelsCachePath();
   await mkdir(dirname(file), { recursive: true });
   const tmp = `${file}.tmp.${process.pid}.${Date.now()}`;
-  const body = { version: 1, fetchedAt: Date.now(), free };
+  const body = { version: 2, fetchedAt: Date.now(), free, meta };
   try {
     await writeFile(tmp, JSON.stringify(body, null, 2));
     await rename(tmp, file);
@@ -1099,22 +1145,26 @@ async function writeModelsCache(free) {
 }
 async function refreshAndCache(timeoutMs, log) {
   const live = await fetchLiveFreeModels(timeoutMs);
-  if (live) {
-    await writeModelsCache(live).catch(
-      (e) => log?.("warn", `cline-free: could not save model cache: ${e instanceof Error ? e.message : String(e)}`)
-    );
-  }
-  return live ? withExtraModels(live) : void 0;
+  if (!live) return void 0;
+  const entries = withExtraModels(live);
+  const meta = await fetchCatalogMetadata(
+    entries.map((e) => e.id),
+    timeoutMs
+  ).catch(() => ({}));
+  await writeModelsCache(live, meta).catch(
+    (e) => log?.("warn", `cline-free: could not save model cache: ${e instanceof Error ? e.message : String(e)}`)
+  );
+  return { entries, meta };
 }
 async function loadFreeModels(log, timeoutMs = 12e3) {
   const cached = await readModelsCache();
   if (cached) {
     const refreshed = refreshAndCache(timeoutMs, log).catch(() => void 0);
-    return { entries: withExtraModels(cached), source: "cache", refreshed };
+    return { entries: withExtraModels(cached.entries), meta: cached.meta, source: "cache", refreshed };
   }
   const live = await refreshAndCache(timeoutMs, log).catch(() => void 0);
-  if (live) return { entries: live, source: "live", refreshed: Promise.resolve(void 0) };
-  return { entries: withExtraModels(FALLBACK_FREE), source: "fallback", refreshed: Promise.resolve(void 0) };
+  if (live) return { ...live, source: "live", refreshed: Promise.resolve(void 0) };
+  return { entries: withExtraModels(FALLBACK_FREE), meta: {}, source: "fallback", refreshed: Promise.resolve(void 0) };
 }
 
 // src/router.ts
@@ -1420,10 +1470,10 @@ var ClineFreePlugin = async ({ client }) => {
     if (deduped) log("info", `cline-free: removed duplicate login(s) \u2014 ${pool.accounts.length} unique account(s) left`);
   }
   const routedFetch = createRoutedFetch(pool, log);
-  const { entries: free, source, refreshed } = await loadFreeModels(log);
-  const buildModels = (list) => {
+  const { entries: free, meta, source, refreshed } = await loadFreeModels(log);
+  const buildModels = (list, autoMeta) => {
     const out = {};
-    for (const entry of list) out[entry.id] = modelConfig(entry);
+    for (const entry of list) out[entry.id] = modelConfig(entry, autoMeta[entry.id]);
     return out;
   };
   await client.app.log({
@@ -1443,8 +1493,8 @@ var ClineFreePlugin = async ({ client }) => {
   }
   return {
     config: async (config) => {
-      const latest = await Promise.race([refreshed, sleep(1500).then(() => void 0)]) ?? free;
-      const models = buildModels(latest);
+      const latest = await Promise.race([refreshed, sleep(1500).then(() => void 0)]) ?? { entries: free, meta };
+      const models = buildModels(latest.entries, latest.meta);
       config.provider ??= {};
       const existing = config.provider[PROVIDER_ID] ?? {};
       const existingModels = existing.models ?? {};

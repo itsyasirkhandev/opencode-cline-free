@@ -1,19 +1,18 @@
 # opencode-cline-free
 
-**v0.6.0** · Use Cline's rotating **free models** inside OpenCode with your Cline account —
+**v0.6.1** · Use Cline's rotating **free models** inside OpenCode with your Cline account —
 same quota you see tagged `FREE` in Cline VSCode/CLI.
 
 Live source: `GET https://api.cline.bot/api/v1/ai/cline/recommended-models`
 (`free` array). The plugin fetches it on every startup, so rotations appear
 automatically. Offline it falls back to a bundled list.
 
-## Current free rotation (checked 2026-10-04)
+## Current free rotation (checked 2026-10-05)
 
 | Model id | Notes |
 |---|---|
 | `stealth/space-bunny-alpha` | stealth preview (vendor anonymous), 1M context · minimal, low, medium, high, xhigh, max |
 | `cline-free/mimo-v2.6-flash` | Cline-only free, MiMo 2.6 (309B MoE) · none, minimal, low, medium, high, xhigh, max (only `none` changes output) |
-| `cline-free/deepseek-v4.1-flash` | Cline-only free, native text+image input, 1M ctx / 384K out · none, minimal, low, medium, high, xhigh, max |
 | `cline-free/muse-spark-1.3-contributor` | Cline-only free · minimal, low, medium, high, xhigh (`max` fails server-side) |
 
 Registered even though it is **not** in the live `free` array (and **not free**):
@@ -22,12 +21,28 @@ Registered even though it is **not** in the live `free` array (and **not free**)
 
 Rotated out of the free list (ids kept in the plugin as known/stale where useful):
 
+- `cline-free/deepseek-v4.1-flash` (rotated out 2026-10-05; Cline now lists DeepSeek V4.1 Flash at paid rates)
 - `stealth/pixel-canary`, `cline-free/gemini-3.8-flash` (rotated out 2026-10-04)
 - `stealth/union-alpha` → replaced by `stealth/space-bunny-alpha`
 - `cline-free/solar-pro4`, `poolside/laguna-s-2.1:free`
 - `deepseek/deepseek-v4-flash`
 
-Restart OpenCode after a Cline rotation so the live list refreshes.
+### Automatic model discovery
+
+You do not need to edit the plugin when Cline rotates its free models:
+
+- **Which models:** read live from Cline's free list on every start.
+- **Their settings:** context/output limits, input types and price are filled
+  in automatically from Cline's public model catalog, so a brand-new free
+  model works without a code change.
+- **Saved copy:** the last good list + settings are kept in
+  `cline-free-models.json` (next to the accounts file) so startup is instant
+  and works offline; a fresh copy is fetched in the background.
+
+The hand-written entries in `src/models.ts` only pin details the catalog can't
+report (probe-verified reasoning levels) and provide the offline fallback.
+After a rotation, restart OpenCode (a second restart picks up a background
+refresh if the saved copy was older).
 
 ## Install (local)
 
@@ -129,12 +144,12 @@ or in `opencode.json`:
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "model": "cline-free/cline-free/deepseek-v4.1-flash"
+  "model": "cline-free/cline-free/mimo-v2.6-flash"
 }
 ```
 
-> Note: model ids contain a `/` themselves (e.g. `cline-free/deepseek-v4.1-flash`),
-> so the full spec is `cline-free/cline-free/deepseek-v4.1-flash`.
+> Note: model ids contain a `/` themselves (e.g. `cline-free/mimo-v2.6-flash`),
+> so the full spec is `cline-free/cline-free/mimo-v2.6-flash`.
 > `cline-free/...` ids are Cline-native free ids; stealth ids ride the same
 > free quota at $0.
 > Stale ids (`deepseek/deepseek-v4-flash`, `z-ai/glm-5.3-flash`, etc.) may
@@ -210,6 +225,7 @@ npm publish --access public
 
 | Version | Changes |
 |---|---|
+| **0.6.1** | `cline-free/deepseek-v4.1-flash` removed from the free fallback (left the free list 2026-10-05, now paid); new free models get limits, inputs and price automatically from Cline's public model catalog, cached with the list |
 | **0.6.0** | Split into `src/` modules + bundled `dist/cline-free.js`; single model registry; provider-scoped fetch (no global `fetch` patch); last good model list cached on disk and refreshed in the background; fair per-model rotation; lock heartbeat so slow refreshes are not broken as stale; paid models never fail over/replay on another account; tests, CI and npm scripts |
 | **0.5.10** | Sync free rotation (2026-10-04): `stealth/pixel-canary` and `cline-free/gemini-3.8-flash` rotated out; offline fallback now matches the live list (deepseek-v4.1-flash, space-bunny-alpha, mimo-v2.6-flash, muse-spark-1.3-contributor) |
 | **0.5.9** | `stealth/pixel-canary` + `cline-free/gemini-3.8-flash` join the free rotation with effort variants, limits, and multimodal input mapped |

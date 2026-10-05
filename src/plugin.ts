@@ -4,7 +4,7 @@ import { pollDeviceAuth, readClineCliSession, refreshClineToken, registerWorkOST
 import { API_BASE, CHAT_BASE_URL, PROVIDER_ID, REFRESH_BUFFER_MS } from "./constants.ts"
 import { TerminalAuthError, fetchWithTimeout, sleep, withWorkOSPrefix } from "./http.ts"
 import { loadFreeModels } from "./modelList.ts"
-import { type FreeEntry, modelConfig } from "./models.ts"
+import { type AutoMeta, type FreeEntry, modelConfig } from "./models.ts"
 import { type Logger, allCandidates, dedupePool, describeLimits, fetchUserEmail, isGenericLabel, loadPoolFile, maskToken, normalizeEmailLabel, payloadEmail, poolFilePath, probeQuarantinedAccounts, pruneLimits, quarantineAccount, refreshAccount, sameAccount, savePoolFile, selectAccount, stripWorkOSPrefix, tokenOf, upsertApiAccount, upsertOAuthAccount } from "./pool.ts"
 import { createRoutedFetch } from "./router.ts"
 
@@ -30,10 +30,10 @@ export const ClineFreePlugin: Plugin = async ({ client }) => {
 
   // Startup list: last good live list from disk (refreshed in the
   // background), else the live endpoint, else the bundled fallback.
-  const { entries: free, source, refreshed } = await loadFreeModels(log)
-  const buildModels = (list: FreeEntry[]) => {
+  const { entries: free, meta, source, refreshed } = await loadFreeModels(log)
+  const buildModels = (list: FreeEntry[], autoMeta: Record<string, AutoMeta>) => {
     const out: Record<string, ReturnType<typeof modelConfig>> = {}
-    for (const entry of list) out[entry.id] = modelConfig(entry)
+    for (const entry of list) out[entry.id] = modelConfig(entry, autoMeta[entry.id])
     return out
   }
 
@@ -55,8 +55,8 @@ export const ClineFreePlugin: Plugin = async ({ client }) => {
   return {
     config: async (config: any) => {
       // Prefer the background refresh when it lands quickly.
-      const latest = (await Promise.race([refreshed, sleep(1500).then(() => undefined)])) ?? free
-      const models = buildModels(latest)
+      const latest = (await Promise.race([refreshed, sleep(1500).then(() => undefined)])) ?? { entries: free, meta }
+      const models = buildModels(latest.entries, latest.meta)
       // NOTE: we inject via the `config` hook (not `provider.models`)
       // because OpenCode currently skips `provider.models` for providers
       // outside the models.dev catalog. Config injection works today.

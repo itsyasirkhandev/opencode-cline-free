@@ -15,7 +15,7 @@
  * - space-bunny-alpha / pixel-canary: minimal..max (`none` → 400 "Reasoning is
  *   mandatory for this endpoint and cannot be disabled")
  * - mimo-v2.6-flash: none..max (only `none` measurably changes output)
- * - deepseek-v4.1-flash: none..max
+ * - deepseek-v4.1-flash (no longer free): none..max
  * - muse-spark-1.3: minimal..xhigh (`max` → HTTP 500, Meta rejects it)
  * - gemini-3.8-flash: low/medium/high (mandatory reasoning, default medium)
  * - glm: low/high/max; laguna: off/max only; union-alpha: low..xhigh
@@ -53,22 +53,18 @@ export type ModelSpec = {
 export const DEFAULT_COST: Cost = { input: 0, output: 0, cache_read: 0 }
 export const DEFAULT_LIMIT: Limit = { context: 200_000, output: 32_000 }
 export const DEFAULT_INPUT = ["text"]
-export const DEFAULT_VARIANTS = ["low", "medium", "high", "max"]
+// Conservative efforts for models nobody has probed yet (`max` is rejected
+// by some vendors). Probe and add explicit `variants` to override.
+export const DEFAULT_VARIANTS = ["low", "medium", "high"]
+
+/** Metadata discovered automatically from Cline's public model catalog. */
+export type AutoMeta = { limit?: Limit; input?: string[]; cost?: Cost; reasoning?: boolean }
 
 const FULL = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
 const NO_NONE = ["minimal", "low", "medium", "high", "xhigh", "max"]
 
 export const MODELS: Record<string, ModelSpec> = {
-  // --- Current free rotation (checked 2026-10-04) ---
-  "cline-free/deepseek-v4.1-flash": {
-    name: "DeepSeek V4.1 Flash",
-    description: "Sparse MoE (CED architecture) with native image understanding and 1M context window.",
-    status: "free",
-    cost: { input: 0.1, output: 0.4, cache_read: 0.003 },
-    limit: { context: 1_000_000, output: 384_000 },
-    input: ["text", "image"],
-    variants: FULL,
-  },
+  // --- Current free rotation (checked 2026-10-05) ---
   "stealth/space-bunny-alpha": {
     name: "Space Bunny Alpha",
     description:
@@ -111,6 +107,16 @@ export const MODELS: Record<string, ModelSpec> = {
   },
 
   // --- Rotated out (kept so metadata is right if they return) ---
+  // Left the free list on 2026-10-05; Cline now lists it at paid rates.
+  "cline-free/deepseek-v4.1-flash": {
+    name: "DeepSeek V4.1 Flash",
+    description: "Sparse MoE (CED architecture) with native image understanding and 1M context window.",
+    status: "stale",
+    cost: { input: 0.3, output: 1.2, cache_read: 0.006 },
+    limit: { context: 1_000_000, output: 384_000 },
+    input: ["text", "image"],
+    variants: FULL,
+  },
   "stealth/pixel-canary": {
     name: "Pixel Canary",
     description: "Anonymous large model with strong coding capabilities.",
@@ -139,7 +145,7 @@ export const MODELS: Record<string, ModelSpec> = {
   "deepseek/deepseek-v4.1-flash": {
     name: "DeepSeek V4.1 Flash",
     status: "stale",
-    cost: { input: 0.1, output: 0.4, cache_read: 0.003 },
+    cost: { input: 0.3, output: 1.2, cache_read: 0.006 },
     limit: { context: 1_000_000, output: 384_000 },
     input: ["text", "image"],
     variants: FULL,
@@ -199,17 +205,23 @@ export function displayName(entry: FreeEntry): string {
   return base.toLowerCase().includes("free") ? base : `${base} (free)`
 }
 
-export function modelConfig(entry: FreeEntry) {
+/**
+ * Model config for OpenCode. Precedence per field: hand-verified registry
+ * entry > automatically discovered catalog metadata > safe defaults. A brand
+ * new free model therefore works with correct limits/inputs/cost without any
+ * code change; add a registry entry only to pin probe-verified efforts.
+ */
+export function modelConfig(entry: FreeEntry, auto?: AutoMeta) {
   const spec = MODELS[entry.id]
-  const limit = spec?.limit ?? DEFAULT_LIMIT
-  const levels = spec?.variants ?? DEFAULT_VARIANTS
-  const cost = spec?.cost ?? DEFAULT_COST
+  const limit = spec?.limit ?? auto?.limit ?? DEFAULT_LIMIT
+  const levels = spec?.variants ?? (auto?.reasoning === false ? [] : DEFAULT_VARIANTS)
+  const cost = spec?.cost ?? auto?.cost ?? DEFAULT_COST
   const variants: Record<string, { reasoningEffort: string }> = {}
   for (const level of levels) variants[level] = { reasoningEffort: level }
   return {
     name: displayName(entry),
     limit: { context: limit.context, output: limit.output },
-    modalities: { input: spec?.input ?? DEFAULT_INPUT, output: ["text"] },
+    modalities: { input: spec?.input ?? auto?.input ?? DEFAULT_INPUT, output: ["text"] },
     tool_call: true,
     reasoning: true,
     cost: { input: cost.input, output: cost.output, cache_read: cost.cache_read, cache_write: 0 },
