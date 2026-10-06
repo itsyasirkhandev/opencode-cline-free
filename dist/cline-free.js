@@ -319,16 +319,7 @@ var DEFAULT_VARIANTS = ["low", "medium", "high"];
 var FULL = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 var NO_NONE = ["minimal", "low", "medium", "high", "xhigh", "max"];
 var MODELS = {
-  // --- Current free rotation (checked 2026-10-05) ---
-  "stealth/space-bunny-alpha": {
-    name: "Space Bunny Alpha",
-    description: "Anonymous large model with blazing-fast inference, strong coding, native multimodal input, and 1M context.",
-    status: "free",
-    cost: { input: 0, output: 0, cache_read: 0 },
-    limit: { context: 1e6, output: 524288 },
-    input: ["text", "image", "video"],
-    variants: NO_NONE
-  },
+  // --- Current free rotation (checked 2026-10-06) ---
   "cline-free/mimo-v2.6-flash": {
     name: "MiMo V2.6 Flash",
     description: "Xiaomi MiMo 2.6 Flash \u2014 309B MoE (15B active), hybrid attention, multimodal.",
@@ -336,7 +327,9 @@ var MODELS = {
     cost: { input: 0.14, output: 0.28, cache_read: 28e-4 },
     limit: { context: 1048576, output: 131072 },
     input: ["text", "image", "video", "audio"],
-    variants: FULL
+    // Reasoning is on/off only: the catalog lists `reasoning` but not
+    // `reasoning_effort`, and probes showed only `none` changes output.
+    variants: ["none", "high"]
   },
   "cline-free/muse-spark-1.3-contributor": {
     name: "Muse Spark 1.3 Contributor",
@@ -359,6 +352,16 @@ var MODELS = {
     variants: ["low", "high", "max"]
   },
   // --- Rotated out (kept so metadata is right if they return) ---
+  // Left the free list on 2026-10-06.
+  "stealth/space-bunny-alpha": {
+    name: "Space Bunny Alpha",
+    description: "Anonymous large model with blazing-fast inference, strong coding, native multimodal input, and 1M context.",
+    status: "stale",
+    cost: { input: 0, output: 0, cache_read: 0 },
+    limit: { context: 1e6, output: 524288 },
+    input: ["text", "image", "video"],
+    variants: NO_NONE
+  },
   // Left the free list on 2026-10-05; Cline now lists it at paid rates.
   "cline-free/deepseek-v4.1-flash": {
     name: "DeepSeek V4.1 Flash",

@@ -14,7 +14,10 @@
  * endpoint accepts for that model:
  * - space-bunny-alpha / pixel-canary: minimal..max (`none` → 400 "Reasoning is
  *   mandatory for this endpoint and cannot be disabled")
- * - mimo-v2.6-flash: none..max (only `none` measurably changes output)
+ * - mimo-v2.6-flash: on/off only → exposed as `none` (off) and `high` (on).
+ *   The gateway accepts none..max, but only `none` changes output and Cline's
+ *   catalog lists `reasoning` without `reasoning_effort` (rechecked 2026-10-06)
+ * - muse-spark-1.3: catalog lists `reasoning_effort` (rechecked 2026-10-06)
  * - deepseek-v4.1-flash (no longer free): none..max
  * - muse-spark-1.3: minimal..xhigh (`max` → HTTP 500, Meta rejects it)
  * - gemini-3.8-flash: low/medium/high (mandatory reasoning, default medium)
@@ -64,17 +67,7 @@ const FULL = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
 const NO_NONE = ["minimal", "low", "medium", "high", "xhigh", "max"]
 
 export const MODELS: Record<string, ModelSpec> = {
-  // --- Current free rotation (checked 2026-10-05) ---
-  "stealth/space-bunny-alpha": {
-    name: "Space Bunny Alpha",
-    description:
-      "Anonymous large model with blazing-fast inference, strong coding, native multimodal input, and 1M context.",
-    status: "free",
-    cost: { input: 0, output: 0, cache_read: 0 },
-    limit: { context: 1_000_000, output: 524_288 },
-    input: ["text", "image", "video"],
-    variants: NO_NONE,
-  },
+  // --- Current free rotation (checked 2026-10-06) ---
   "cline-free/mimo-v2.6-flash": {
     name: "MiMo V2.6 Flash",
     description: "Xiaomi MiMo 2.6 Flash — 309B MoE (15B active), hybrid attention, multimodal.",
@@ -82,7 +75,9 @@ export const MODELS: Record<string, ModelSpec> = {
     cost: { input: 0.14, output: 0.28, cache_read: 0.0028 },
     limit: { context: 1_048_576, output: 131_072 },
     input: ["text", "image", "video", "audio"],
-    variants: FULL,
+    // Reasoning is on/off only: the catalog lists `reasoning` but not
+    // `reasoning_effort`, and probes showed only `none` changes output.
+    variants: ["none", "high"],
   },
   "cline-free/muse-spark-1.3-contributor": {
     name: "Muse Spark 1.3 Contributor",
@@ -107,6 +102,17 @@ export const MODELS: Record<string, ModelSpec> = {
   },
 
   // --- Rotated out (kept so metadata is right if they return) ---
+  // Left the free list on 2026-10-06.
+  "stealth/space-bunny-alpha": {
+    name: "Space Bunny Alpha",
+    description:
+      "Anonymous large model with blazing-fast inference, strong coding, native multimodal input, and 1M context.",
+    status: "stale",
+    cost: { input: 0, output: 0, cache_read: 0 },
+    limit: { context: 1_000_000, output: 524_288 },
+    input: ["text", "image", "video"],
+    variants: NO_NONE,
+  },
   // Left the free list on 2026-10-05; Cline now lists it at paid rates.
   "cline-free/deepseek-v4.1-flash": {
     name: "DeepSeek V4.1 Flash",

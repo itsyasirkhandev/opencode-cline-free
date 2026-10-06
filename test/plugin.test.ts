@@ -40,7 +40,6 @@ test("fallback list matches the current free rotation", () => {
     [
       "cline-free/mimo-v2.6-flash",
       "cline-free/muse-spark-1.3-contributor",
-      "stealth/space-bunny-alpha",
     ],
   )
 })
@@ -215,4 +214,10 @@ test("new free models get metadata automatically from the catalog", () => {
   assert.equal("variants" in cfg, false) // catalog says no reasoning params
   const r = modelConfig({ id: "stealth/exact-id" }, meta["stealth/exact-id"])
   assert.deepEqual(Object.keys(r.variants ?? {}), ["low", "medium", "high"])
+})
+
+test("reasoning efforts for the current free models", () => {
+  assert.deepEqual(Object.keys(modelConfig({ id: "cline-free/mimo-v2.6-flash" }).variants ?? {}), ["none", "high"])
+  assert.deepEqual(Object.keys(modelConfig({ id: "cline-free/muse-spark-1.3-contributor" }).variants ?? {}), ["minimal", "low", "medium", "high", "xhigh"])
+  assert.equal(MODELS["stealth/space-bunny-alpha"].status, "stale")
 })
