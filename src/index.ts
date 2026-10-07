@@ -17,10 +17,10 @@
  * cline-free/gemini-3.8-flash, stealth/union-alpha, cline-free/solar-pro4,
  * poolside/laguna-s-2.1:free, deepseek/deepseek-v4-flash.
  */
-import { ClineFreePlugin } from "./plugin.ts"
-import { classifyHttpFailure, fetchWithTimeout, parseOAuthErrorCode, TerminalAuthError, TransientAuthError, withTransientRetries, withWorkOSPrefix } from "./http.ts"
-import { refreshClineToken, refreshClineTokenOnce } from "./auth.ts"
-import { dedupePool, loadPoolFile, quarantineAccount, refreshAccount, savePoolFile } from "./pool.ts"
+import { ClineFreePlugin } from "./v1.ts"
+import { classifyHttpFailure, fetchWithTimeout, parseOAuthErrorCode, TerminalAuthError, TransientAuthError, withTransientRetries, withWorkOSPrefix } from "./core/http.ts"
+import { refreshClineToken, refreshClineTokenOnce } from "./core/auth.ts"
+import { dedupePool, loadPoolFile, quarantineAccount, refreshAccount, savePoolFile } from "./core/pool.ts"
 
 // Test seam (no runtime effect on the plugin): lets harness scripts
 // exercise the auth plumbing with a mocked transport.

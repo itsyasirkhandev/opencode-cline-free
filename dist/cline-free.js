@@ -1,7 +1,7 @@
-// src/plugin.ts
+// src/v1.ts
 import { tool } from "@opencode-ai/plugin";
 
-// src/constants.ts
+// src/core/constants.ts
 var PROVIDER_ID = "cline-free";
 var API_BASE = "https://api.cline.bot";
 var CHAT_BASE_URL = `${API_BASE}/api/v1`;
@@ -13,7 +13,7 @@ var REFRESH_BUFFER_MS = 5 * 60 * 1e3;
 var ACCOUNTS_FILE_NAME = "cline-free-accounts.json";
 var DAY_MS = 24 * 60 * 60 * 1e3;
 
-// src/http.ts
+// src/core/http.ts
 function withWorkOSPrefix(token) {
   const t = token.trim();
   if (t.toLowerCase().startsWith(WORKOS_PREFIX)) return t;
@@ -103,7 +103,7 @@ async function withTransientRetries(fn, opts = {}) {
   throw last instanceof Error ? last : new TransientAuthError(`operation failed: ${String(last)}`);
 }
 
-// src/auth.ts
+// src/core/auth.ts
 async function startDeviceAuth() {
   const res = await withTransientRetries(
     () => fetchWithTimeout(`${WORKOS_API}/user_management/authorize/device`, {
@@ -311,7 +311,7 @@ async function validateClineToken(accessToken) {
   }
 }
 
-// src/models.ts
+// src/core/models.ts
 var DEFAULT_COST = { input: 0, output: 0, cache_read: 0 };
 var DEFAULT_LIMIT = { context: 2e5, output: 32e3 };
 var DEFAULT_INPUT = ["text"];
@@ -466,7 +466,7 @@ function modelConfig(entry, auto) {
   };
 }
 
-// src/pool.ts
+// src/core/pool.ts
 function modelOfRequest(url, body) {
   if (!body || !url.includes("/chat/completions")) return void 0;
   try {
@@ -1045,7 +1045,7 @@ function describeLimits(pool) {
   return ` Limited: ${limited.map((a) => `${a.label ?? a.id}\u2192${new Date(a.limitedUntil).toISOString()}`).join(", ")}.`;
 }
 
-// src/modelList.ts
+// src/core/modelList.ts
 var CATALOG_URL = `${API_BASE}/api/v1/ai/cline/models`;
 var MODELS_CACHE_FILE_NAME = "cline-free-models.json";
 function modelsCachePath() {
@@ -1170,7 +1170,166 @@ async function loadFreeModels(log, timeoutMs = 12e3) {
   return { entries: withExtraModels(FALLBACK_FREE), meta: {}, source: "fallback", refreshed: Promise.resolve(void 0) };
 }
 
-// src/router.ts
+// src/core/account.ts
+function mergeNativeAuth(pool, auth) {
+  const a = auth;
+  if (a?.type === "api" && typeof a.key === "string" && a.key.trim()) {
+    const snapshot = JSON.stringify(pool.accounts);
+    upsertApiAccount(pool, String(a.key), void 0);
+    if (JSON.stringify(pool.accounts) !== snapshot) void savePoolFile(pool).catch(() => {
+    });
+  } else if (a?.type === "oauth" && typeof a.access === "string") {
+    const snapshot = JSON.stringify(pool.accounts);
+    const acc = upsertOAuthAccount(
+      pool,
+      { access: String(a.access), refresh: String(a.refresh ?? ""), expires: Number(a.expires ?? 0) },
+      typeof a.accountId === "string" ? a.accountId : void 0
+    );
+    if ((!acc.label || acc.label === a.accountId) && isGenericLabel(acc.label)) {
+      const knownEmail = normalizeEmailLabel(typeof a.accountId === "string" ? a.accountId : void 0) ?? payloadEmail(String(a.access));
+      if (knownEmail) {
+        acc.label = knownEmail;
+        void savePoolFile(pool).catch(() => {
+        });
+      } else {
+        void fetchUserEmail(String(a.access)).then((email) => {
+          if (email) {
+            acc.label = email;
+            void savePoolFile(pool).catch(() => {
+            });
+          }
+        });
+      }
+    }
+    if (JSON.stringify(pool.accounts) !== snapshot) void savePoolFile(pool).catch(() => {
+    });
+  }
+}
+async function resolveActiveToken(pool, log, opts = {}) {
+  let picked = selectAccount(pool, Date.now());
+  if (!picked && pool.accounts.some((a) => a.authFailedAt)) {
+    await probeQuarantinedAccounts(pool, log);
+    picked = selectAccount(pool, Date.now());
+  }
+  if (!picked) {
+    const candidates = allCandidates(pool);
+    if (candidates.length === 0) return void 0;
+    const earliest = [...candidates].sort((a, b) => (b.limitedUntil ?? 0) - (a.limitedUntil ?? 0))[0];
+    const t = tokenOf(earliest);
+    if (!t) return void 0;
+    log("warn", `cline-free: all accounts cooling down \u2014 next reset ${new Date(earliest.limitedUntil ?? Date.now()).toISOString()}${describeLimits(pool)}`);
+    return t;
+  }
+  const useFallback = (exceptId) => {
+    const fb = selectAccount(pool, Date.now());
+    const ft = fb ? tokenOf(fb) : void 0;
+    if (fb && ft && fb.id !== exceptId) {
+      pool.activeId = fb.id;
+      fb.lastUsed = Date.now();
+      void savePoolFile(pool).catch(() => {
+      });
+      return ft;
+    }
+    return void 0;
+  };
+  const needsRefresh = !!picked.access && typeof picked.expires === "number" && picked.expires - Date.now() < REFRESH_BUFFER_MS;
+  if (needsRefresh && !picked.refresh) {
+    quarantineAccount(pool, picked, "access token expired and no refresh token is stored", log);
+    const fb = useFallback(picked.id);
+    if (fb) return fb;
+  } else if (needsRefresh) {
+    try {
+      await refreshAccount(pool, picked, log);
+      await opts.onRefreshed?.(picked);
+    } catch (e) {
+      if (e instanceof TerminalAuthError) {
+        quarantineAccount(pool, picked, e.message, log);
+      } else {
+        log("warn", `cline-free: token refresh failed for ${picked.label ?? picked.id}: ${e instanceof Error ? e.message : String(e)} \u2014 trying next account`, { accountId: picked.id });
+        picked.lastError = "refresh failed";
+        void savePoolFile(pool).catch(() => {
+        });
+      }
+      const fb = useFallback(picked.id);
+      if (fb) return fb;
+    }
+  }
+  const token = tokenOf(picked);
+  if (!token) return void 0;
+  pool.activeId = picked.id;
+  picked.lastUsed = Date.now();
+  return token;
+}
+function tidyPool(pool) {
+  if (pruneLimits(pool) || dedupePool(pool)) void savePoolFile(pool).catch(() => {
+  });
+}
+
+// src/core/tools.ts
+var TOOL_DESCRIPTIONS = {
+  status: "Show Cline Free account pool status: stored accounts, env accounts, which is active, and 429 cooldowns.",
+  remove: "Remove a stored Cline Free account from the rotation pool by id (see cline_free_status). Env accounts cannot be removed here \u2014 unset the env var instead.",
+  addToken: "Validate and add a Cline token (workos:... or raw) to the rotation pool."
+};
+function poolStatusText(pool) {
+  pruneLimits(pool);
+  if (dedupePool(pool)) void savePoolFile(pool).catch(() => {
+  });
+  const candidates = allCandidates(pool);
+  const lines = pool.accounts.map((a) => {
+    const t = tokenOf(a);
+    const now2 = Date.now();
+    const modelCd = a.modelLimits ? Object.entries(a.modelLimits).filter(([, until]) => until > now2).map(([m, until]) => `${m}\u2192${new Date(until).toISOString().slice(5, 16)}Z`).sort().join(", ") : "";
+    const anyLimited = a.limitedUntil && a.limitedUntil > now2;
+    const quarantined = !!a.authFailedAt;
+    const flags = [
+      a.id === pool.activeId ? "active" : "",
+      modelCd || anyLimited ? "COOLDOWN" : "",
+      modelCd,
+      quarantined ? `NEEDS-RELOGIN${a.authFailedReason ? ` (${a.authFailedReason.slice(0, 80)})` : ""}` : "",
+      a.source
+    ].filter(Boolean).join(" | ");
+    return `- ${a.label ?? a.id} [${a.id}] (${flags}) token ${t ? maskToken(t) : "?"}` + (a.expires ? ` expires ${new Date(a.expires).toISOString()}` : "");
+  });
+  const envCount = candidates.filter((a) => a.id.startsWith("env-")).length;
+  const qCount = pool.accounts.filter((a) => a.authFailedAt).length;
+  const header = `cline-free pool: ${pool.accounts.length} stored${qCount ? ` (${qCount} need re-login)` : ""} + ${envCount} env \u2192 ${candidates.length} rotation candidate(s). File: ${poolFilePath()}`;
+  return lines.length > 0 ? `${header}
+${lines.join("\n")}` : `${header}
+(no accounts \u2014 run /connect and pick cline-free)`;
+}
+async function removeAccount(pool, id, log) {
+  const idx = pool.accounts.findIndex((a) => a.id === id);
+  if (idx === -1) return `No stored account with id ${id}.`;
+  const [removed] = pool.accounts.splice(idx, 1);
+  if (pool.activeId === id) delete pool.activeId;
+  await savePoolFile(pool).catch(() => {
+  });
+  log("info", `cline-free: removed account ${removed.label ?? removed.id}`, { accountId: id });
+  return `Removed ${removed.label ?? removed.id} (${pool.accounts.length} stored left).`;
+}
+async function addToken(pool, token, label, log) {
+  const key = token?.trim();
+  if (!key) return "No token provided.";
+  try {
+    const res = await fetchWithTimeout(`${API_BASE}/api/v1/users/me`, {
+      headers: { Authorization: `Bearer ${withWorkOSPrefix(key)}`, Accept: "application/json" }
+    });
+    if (!res.ok) return `Token rejected by Cline (HTTP ${res.status}). Not added.`;
+  } catch (e) {
+    return `Could not reach Cline: ${e instanceof Error ? e.message : String(e)}. Not added.`;
+  }
+  const email = await fetchUserEmail(key);
+  const acc = upsertApiAccount(pool, key, label?.trim() || email);
+  if (label?.trim()) acc.label = label.trim();
+  else if (email) acc.label = email;
+  await savePoolFile(pool).catch(() => {
+  });
+  log("info", `cline-free: added token ${acc.label ?? acc.id} (${pool.accounts.length} total)`, { accountId: acc.id });
+  return `Added ${acc.label ?? acc.id} [${acc.id}] (${pool.accounts.length} stored total).`;
+}
+
+// src/core/router.ts
 function createRoutedFetch(pool, log, baseFetch = (input, init) => globalThis.fetch(input, init)) {
   const origFetch = baseFetch;
   return (async (input, init) => {
@@ -1458,7 +1617,7 @@ function createRoutedFetch(pool, log, baseFetch = (input, init) => globalThis.fe
   });
 }
 
-// src/plugin.ts
+// src/v1.ts
 var ClineFreePlugin = async ({ client }) => {
   const log = (level, message, extra) => {
     void client.app.log({ body: { service: "cline-free", level, message, ...extra ? { extra } : {} } }).catch(() => {
@@ -1535,74 +1694,14 @@ var ClineFreePlugin = async ({ client }) => {
       provider: PROVIDER_ID,
       loader: async (getAuth, provider) => {
         const baseHeaders = { "X-CLIENT-TYPE": "opencode" };
-        if (pruneLimits(pool) || dedupePool(pool)) void savePoolFile(pool).catch(() => {
-        });
+        tidyPool(pool);
         const auth = await getAuth().catch(() => void 0);
-        if (auth?.type === "api" && typeof auth.key === "string" && auth.key.trim()) {
-          const snapshot = JSON.stringify(pool.accounts);
-          upsertApiAccount(pool, String(auth.key), void 0);
-          if (JSON.stringify(pool.accounts) !== snapshot) void savePoolFile(pool).catch(() => {
-          });
-        } else if (auth?.type === "oauth" && typeof auth.access === "string") {
-          const snapshot = JSON.stringify(pool.accounts);
-          const acc = upsertOAuthAccount(
-            pool,
-            { access: String(auth.access), refresh: String(auth.refresh ?? ""), expires: Number(auth.expires ?? 0) },
-            typeof auth.accountId === "string" ? auth.accountId : void 0
-          );
-          if ((!acc.label || acc.label === auth.accountId) && isGenericLabel(acc.label)) {
-            const knownEmail = normalizeEmailLabel(typeof auth.accountId === "string" ? auth.accountId : void 0) ?? payloadEmail(String(auth.access));
-            if (knownEmail) {
-              acc.label = knownEmail;
-              void savePoolFile(pool).catch(() => {
-              });
-            } else {
-              void fetchUserEmail(String(auth.access)).then((email) => {
-                if (email) {
-                  acc.label = email;
-                  void savePoolFile(pool).catch(() => {
-                  });
-                }
-              });
-            }
-          }
-          if (JSON.stringify(pool.accounts) !== snapshot) void savePoolFile(pool).catch(() => {
-          });
-        }
-        let picked = selectAccount(pool, Date.now());
-        if (!picked && pool.accounts.some((a) => a.authFailedAt)) {
-          await probeQuarantinedAccounts(pool, log);
-          picked = selectAccount(pool, Date.now());
-        }
-        if (!picked) {
-          const candidates = allCandidates(pool);
-          if (candidates.length === 0) return {};
-          const earliest = [...candidates].sort((a, b) => (b.limitedUntil ?? 0) - (a.limitedUntil ?? 0))[0];
-          const t = tokenOf(earliest);
-          if (!t) return {};
-          log("warn", `cline-free: all accounts cooling down \u2014 next reset ${new Date(earliest.limitedUntil ?? Date.now()).toISOString()}${describeLimits(pool)}`);
-          return { apiKey: withWorkOSPrefix(t), baseURL: CHAT_BASE_URL, headers: baseHeaders, fetch: routedFetch };
-        }
-        const useFallback = (exceptId) => {
-          const fb = selectAccount(pool, Date.now());
-          const ft = fb ? tokenOf(fb) : void 0;
-          if (fb && ft && fb.id !== exceptId) {
-            pool.activeId = fb.id;
-            fb.lastUsed = Date.now();
-            void savePoolFile(pool).catch(() => {
-            });
-            return { apiKey: withWorkOSPrefix(ft), baseURL: CHAT_BASE_URL, headers: baseHeaders, fetch: routedFetch };
-          }
-          return void 0;
-        };
-        const needsRefresh = !!picked.access && typeof picked.expires === "number" && picked.expires - Date.now() < REFRESH_BUFFER_MS;
-        if (needsRefresh && !picked.refresh) {
-          quarantineAccount(pool, picked, "access token expired and no refresh token is stored", log);
-          const fb = useFallback(picked.id);
-          if (fb) return fb;
-        } else if (needsRefresh) {
-          try {
-            await refreshAccount(pool, picked, log);
+        mergeNativeAuth(pool, auth);
+        const token = await resolveActiveToken(pool, log, {
+          // Keep the native single-auth entry fresh only when it belongs to
+          // the same Cline user we just refreshed (identity, not token
+          // equality — the token just rotated).
+          onRefreshed: async (picked) => {
             const t = tokenOf(picked);
             if (auth?.type === "oauth" && typeof auth.access === "string" && t && sameAccount(auth.access, t)) {
               await provider?.update?.({
@@ -1612,23 +1711,9 @@ var ClineFreePlugin = async ({ client }) => {
               }).catch(() => {
               });
             }
-          } catch (e) {
-            if (e instanceof TerminalAuthError) {
-              quarantineAccount(pool, picked, e.message, log);
-            } else {
-              log("warn", `cline-free: token refresh failed for ${picked.label ?? picked.id}: ${e instanceof Error ? e.message : String(e)} \u2014 trying next account`, { accountId: picked.id });
-              picked.lastError = "refresh failed";
-              void savePoolFile(pool).catch(() => {
-              });
-            }
-            const fb = useFallback(picked.id);
-            if (fb) return fb;
           }
-        }
-        const token = tokenOf(picked);
+        });
         if (!token) return {};
-        pool.activeId = picked.id;
-        picked.lastUsed = Date.now();
         return { apiKey: withWorkOSPrefix(token), baseURL: CHAT_BASE_URL, headers: baseHeaders, fetch: routedFetch };
       },
       methods: [
@@ -1746,78 +1831,29 @@ var ClineFreePlugin = async ({ client }) => {
     },
     tool: {
       cline_free_status: tool({
-        description: "Show Cline Free account pool status: stored accounts, env accounts, which is active, and 429 cooldowns.",
+        description: TOOL_DESCRIPTIONS.status,
         args: {},
         async execute() {
-          pruneLimits(pool);
-          if (dedupePool(pool)) void savePoolFile(pool).catch(() => {
-          });
-          const candidates = allCandidates(pool);
-          const now = Date.now();
-          const lines = pool.accounts.map((a) => {
-            const t = tokenOf(a);
-            const now2 = Date.now();
-            const modelCd = a.modelLimits ? Object.entries(a.modelLimits).filter(([, until]) => until > now2).map(([m, until]) => `${m}\u2192${new Date(until).toISOString().slice(5, 16)}Z`).sort().join(", ") : "";
-            const anyLimited = a.limitedUntil && a.limitedUntil > now2;
-            const quarantined = !!a.authFailedAt;
-            const flags = [
-              a.id === pool.activeId ? "active" : "",
-              modelCd || anyLimited ? "COOLDOWN" : "",
-              modelCd,
-              quarantined ? `NEEDS-RELOGIN${a.authFailedReason ? ` (${a.authFailedReason.slice(0, 80)})` : ""}` : "",
-              a.source
-            ].filter(Boolean).join(" | ");
-            return `- ${a.label ?? a.id} [${a.id}] (${flags}) token ${t ? maskToken(t) : "?"}` + (a.expires ? ` expires ${new Date(a.expires).toISOString()}` : "");
-          });
-          const envCount = candidates.filter((a) => a.id.startsWith("env-")).length;
-          const qCount = pool.accounts.filter((a) => a.authFailedAt).length;
-          const header = `cline-free pool: ${pool.accounts.length} stored${qCount ? ` (${qCount} need re-login)` : ""} + ${envCount} env \u2192 ${candidates.length} rotation candidate(s). File: ${poolFilePath()}`;
-          return lines.length > 0 ? `${header}
-${lines.join("\n")}` : `${header}
-(no accounts \u2014 run /connect and pick cline-free)`;
+          return poolStatusText(pool);
         }
       }),
       cline_free_remove: tool({
-        description: "Remove a stored Cline Free account from the rotation pool by id (see cline_free_status). Env accounts cannot be removed here \u2014 unset the env var instead.",
+        description: TOOL_DESCRIPTIONS.remove,
         args: {
           id: tool.schema.string().describe("Account id (acc_...) from cline_free_status")
         },
         async execute(args) {
-          const idx = pool.accounts.findIndex((a) => a.id === args.id);
-          if (idx === -1) return `No stored account with id ${args.id}.`;
-          const [removed] = pool.accounts.splice(idx, 1);
-          if (pool.activeId === args.id) delete pool.activeId;
-          await savePoolFile(pool).catch(() => {
-          });
-          log("info", `cline-free: removed account ${removed.label ?? removed.id}`, { accountId: args.id });
-          return `Removed ${removed.label ?? removed.id} (${pool.accounts.length} stored left).`;
+          return removeAccount(pool, args.id, log);
         }
       }),
       cline_free_add_token: tool({
-        description: "Validate and add a Cline token (workos:... or raw) to the rotation pool.",
+        description: TOOL_DESCRIPTIONS.addToken,
         args: {
           token: tool.schema.string().describe("Cline token (workos:... or raw access token)"),
           label: tool.schema.string().optional().describe("Friendly label (defaults to account email)")
         },
         async execute(args) {
-          const key = args.token?.trim();
-          if (!key) return "No token provided.";
-          try {
-            const res = await fetchWithTimeout(`${API_BASE}/api/v1/users/me`, {
-              headers: { Authorization: `Bearer ${withWorkOSPrefix(key)}`, Accept: "application/json" }
-            });
-            if (!res.ok) return `Token rejected by Cline (HTTP ${res.status}). Not added.`;
-          } catch (e) {
-            return `Could not reach Cline: ${e instanceof Error ? e.message : String(e)}. Not added.`;
-          }
-          const email = await fetchUserEmail(key);
-          const acc = upsertApiAccount(pool, key, args.label?.trim() || email);
-          if (args.label?.trim()) acc.label = args.label.trim();
-          else if (email) acc.label = email;
-          await savePoolFile(pool).catch(() => {
-          });
-          log("info", `cline-free: added token ${acc.label ?? acc.id} (${pool.accounts.length} total)`, { accountId: acc.id });
-          return `Added ${acc.label ?? acc.id} [${acc.id}] (${pool.accounts.length} stored total).`;
+          return addToken(pool, args.token, args.label, log);
         }
       })
     }
