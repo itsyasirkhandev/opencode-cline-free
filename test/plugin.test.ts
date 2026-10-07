@@ -4,11 +4,11 @@ import { mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { FALLBACK_FREE, EXTRA_MODELS, MODELS, displayName, isPaidModel, modelConfig } from "../src/models.ts"
-import { classifyHttpFailure, TerminalAuthError, TransientAuthError } from "../src/http.ts"
-import { selectAccount, withFileLock, type PoolFile, type Logger } from "../src/pool.ts"
-import { createRoutedFetch } from "../src/router.ts"
-import { loadFreeModels, matchMetadata, readModelsCache, writeModelsCache } from "../src/modelList.ts"
+import { FALLBACK_FREE, EXTRA_MODELS, MODELS, displayName, isPaidModel, modelConfig } from "../src/core/models.ts"
+import { classifyHttpFailure, TerminalAuthError, TransientAuthError } from "../src/core/http.ts"
+import { selectAccount, withFileLock, type PoolFile, type Logger } from "../src/core/pool.ts"
+import { createRoutedFetch } from "../src/core/router.ts"
+import { loadFreeModels, matchMetadata, readModelsCache, writeModelsCache } from "../src/core/modelList.ts"
 
 const log: Logger = () => {}
 

@@ -164,12 +164,15 @@ single-file bundle for copy-installs and is committed.
 
 | File | Purpose |
 |---|---|
-| `src/models.ts` | one registry with every model's name, status (free/paid/stale), cost, limits, inputs, reasoning efforts |
-| `src/modelList.ts` | live free list + on-disk cache (`cline-free-models.json`, override `CLINE_FREE_MODELS_FILE`) |
-| `src/http.ts` / `src/auth.ts` | timeouts, retry classification, device-code login, token refresh |
-| `src/pool.ts` | account pool, rotation, cooldowns, cross-process lock |
-| `src/router.ts` | provider-scoped fetch with 429/401 failover |
-| `src/plugin.ts` | OpenCode hooks, login methods, tools |
+| `src/core/` | runtime-agnostic code shared by every OpenCode version (no `@opencode-ai/*` imports) |
+| `src/core/models.ts` | one registry with every model's name, status (free/paid/stale), cost, limits, inputs, reasoning efforts |
+| `src/core/modelList.ts` | live free list + on-disk cache (`cline-free-models.json`, override `CLINE_FREE_MODELS_FILE`) |
+| `src/core/http.ts` / `src/core/auth.ts` | timeouts, retry classification, device-code login, token refresh |
+| `src/core/pool.ts` | account pool, rotation, cooldowns, cross-process lock |
+| `src/core/router.ts` | provider-scoped fetch with 429/401 failover |
+| `src/core/account.ts` | account selection, refresh and fallback (shared by every adapter) |
+| `src/core/tools.ts` | tool logic (status / remove / add token) |
+| `src/v1.ts` | OpenCode V1 adapter: hooks, login methods, tool wrappers |
 
 ```bash
 npm ci
@@ -227,6 +230,7 @@ npm publish --access public
 |---|---|
 | **0.6.2** | Sync free rotation (2026-10-06): `stealth/space-bunny-alpha` rotated out (free list is now mimo-v2.6-flash + muse-spark-1.3-contributor); MiMo efforts reduced to `none`/`high` since its reasoning is on/off only |
 | **0.6.1** | `cline-free/deepseek-v4.1-flash` removed from the free fallback (left the free list 2026-10-05, now paid); new free models get limits, inputs and price automatically from Cline's public model catalog, cached with the list |
+| **0.6.3** | Internal refactor: shared code moved to `src/core/`, OpenCode V1 glue isolated in `src/v1.ts` (prep for OpenCode V2 support). No behaviour change |
 | **0.6.0** | Split into `src/` modules + bundled `dist/cline-free.js`; single model registry; provider-scoped fetch (no global `fetch` patch); last good model list cached on disk and refreshed in the background; fair per-model rotation; lock heartbeat so slow refreshes are not broken as stale; paid models never fail over/replay on another account; tests, CI and npm scripts |
 | **0.5.10** | Sync free rotation (2026-10-04): `stealth/pixel-canary` and `cline-free/gemini-3.8-flash` rotated out; offline fallback now matches the live list (deepseek-v4.1-flash, space-bunny-alpha, mimo-v2.6-flash, muse-spark-1.3-contributor) |
 | **0.5.9** | `stealth/pixel-canary` + `cline-free/gemini-3.8-flash` join the free rotation with effort variants, limits, and multimodal input mapped |

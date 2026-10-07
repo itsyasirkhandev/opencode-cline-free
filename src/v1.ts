@@ -1,14 +1,18 @@
 import type { Plugin } from "@opencode-ai/plugin"
 import { tool } from "@opencode-ai/plugin"
-import { pollDeviceAuth, readClineCliSession, refreshClineToken, registerWorkOSTokens, startDeviceAuth, validateClineToken } from "./auth.ts"
-import { API_BASE, CHAT_BASE_URL, PROVIDER_ID, REFRESH_BUFFER_MS } from "./constants.ts"
-import { TerminalAuthError, fetchWithTimeout, sleep, withWorkOSPrefix } from "./http.ts"
-import { loadFreeModels } from "./modelList.ts"
-import { type AutoMeta, type FreeEntry, modelConfig } from "./models.ts"
-import { type Logger, allCandidates, dedupePool, describeLimits, fetchUserEmail, isGenericLabel, loadPoolFile, maskToken, normalizeEmailLabel, payloadEmail, poolFilePath, probeQuarantinedAccounts, pruneLimits, quarantineAccount, refreshAccount, sameAccount, savePoolFile, selectAccount, stripWorkOSPrefix, tokenOf, upsertApiAccount, upsertOAuthAccount } from "./pool.ts"
-import { createRoutedFetch } from "./router.ts"
+import { pollDeviceAuth, readClineCliSession, refreshClineToken, registerWorkOSTokens, startDeviceAuth, validateClineToken } from "./core/auth.ts"
+import { API_BASE, CHAT_BASE_URL, PROVIDER_ID } from "./core/constants.ts"
+import { fetchWithTimeout, sleep, withWorkOSPrefix } from "./core/http.ts"
+import { loadFreeModels } from "./core/modelList.ts"
+import { type AutoMeta, type FreeEntry, modelConfig } from "./core/models.ts"
+import { type Logger, allCandidates, dedupePool, fetchUserEmail, loadPoolFile, pruneLimits, sameAccount, savePoolFile, stripWorkOSPrefix, tokenOf, upsertApiAccount, upsertOAuthAccount } from "./core/pool.ts"
+import { mergeNativeAuth, resolveActiveToken, tidyPool } from "./core/account.ts"
+import { TOOL_DESCRIPTIONS, addToken, poolStatusText, removeAccount } from "./core/tools.ts"
+import { createRoutedFetch } from "./core/router.ts"
 
-// --- OpenCode plugin ---
+// --- OpenCode V1 adapter ---
+// Thin glue between the V1 hook API and the runtime-agnostic core in
+// ./core. Keep OpenCode-version-specific code here only.
 
 export const ClineFreePlugin: Plugin = async ({ client }) => {
   const log: Logger = (level, message, extra) => {
@@ -98,92 +102,15 @@ export const ClineFreePlugin: Plugin = async ({ client }) => {
       provider: PROVIDER_ID,
       loader: async (getAuth: () => Promise<any>, provider: any) => {
         const baseHeaders = { "X-CLIENT-TYPE": "opencode" }
-        if (pruneLimits(pool) || dedupePool(pool)) void savePoolFile(pool).catch(() => {})
+        tidyPool(pool)
         const auth = await getAuth().catch(() => undefined)
+        mergeNativeAuth(pool, auth)
 
-        // Merge the native single Auth into the pool (update in place when
-        // the same Cline user logs in again, append only for new users) so
-        // repeated `/connect` calls accumulate UNIQUE accounts.
-        if (auth?.type === "api" && typeof auth.key === "string" && auth.key.trim()) {
-          const snapshot = JSON.stringify(pool.accounts)
-          upsertApiAccount(pool, String(auth.key), undefined)
-          if (JSON.stringify(pool.accounts) !== snapshot) void savePoolFile(pool).catch(() => {})
-        } else if (auth?.type === "oauth" && typeof auth.access === "string") {
-          const snapshot = JSON.stringify(pool.accounts)
-          const acc = upsertOAuthAccount(
-            pool,
-            { access: String(auth.access), refresh: String(auth.refresh ?? ""), expires: Number(auth.expires ?? 0) },
-            typeof auth.accountId === "string" ? auth.accountId : undefined,
-          )
-          // Backfill a friendly label once per new account.
-          if ((!acc.label || acc.label === auth.accountId) && isGenericLabel(acc.label)) {
-            const knownEmail = normalizeEmailLabel(typeof auth.accountId === "string" ? auth.accountId : undefined) ?? payloadEmail(String(auth.access))
-            if (knownEmail) {
-              acc.label = knownEmail
-              void savePoolFile(pool).catch(() => {})
-            } else {
-              void fetchUserEmail(String(auth.access)).then((email) => {
-                if (email) {
-                  acc.label = email
-                  void savePoolFile(pool).catch(() => {})
-                }
-              })
-            }
-          }
-          if (JSON.stringify(pool.accounts) !== snapshot) void savePoolFile(pool).catch(() => {})
-        }
-
-        let picked = selectAccount(pool, Date.now())
-        if (!picked && pool.accounts.some((a) => a.authFailedAt)) {
-          // No healthy account, but quarantined ones exist: give the
-          // recovery probes a chance before reporting exhaustion (lazy, so
-          // the hot path never pays probe latency).
-          await probeQuarantinedAccounts(pool, log)
-          picked = selectAccount(pool, Date.now())
-        }
-        if (!picked) {
-          const candidates = allCandidates(pool)
-          if (candidates.length === 0) return {}
-          // Every account is cooling down: hand the request to the fetch
-          // router with the earliest-reset account — it selects per model
-          // (accounts limited on THIS model still block, others qualify),
-          // so a 429 on glm doesn't block muse.
-          const earliest = [...candidates].sort((a, b) => (b.limitedUntil ?? 0) - (a.limitedUntil ?? 0))[0]
-          const t = tokenOf(earliest)
-          if (!t) return {}
-          log("warn", `cline-free: all accounts cooling down — next reset ${new Date(earliest.limitedUntil ?? Date.now()).toISOString()}${describeLimits(pool)}`)
-          return { apiKey: withWorkOSPrefix(t), baseURL: CHAT_BASE_URL, headers: baseHeaders, fetch: routedFetch }
-        }
-
-        // Refresh the picked oauth account if it is about to expire.
-        // Single-flight + persisted: concurrent requests share one refresh,
-        // so rotation on the server never sees a replayed refresh token.
-        const useFallback = (exceptId: string) => {
-          const fb = selectAccount(pool, Date.now())
-          const ft = fb ? tokenOf(fb) : undefined
-          if (fb && ft && fb.id !== exceptId) {
-            pool.activeId = fb.id
-            fb.lastUsed = Date.now()
-            void savePoolFile(pool).catch(() => {})
-            return { apiKey: withWorkOSPrefix(ft), baseURL: CHAT_BASE_URL, headers: baseHeaders, fetch: routedFetch }
-          }
-          return undefined
-        }
-        const needsRefresh =
-          !!picked.access && typeof picked.expires === "number" && picked.expires - Date.now() < REFRESH_BUFFER_MS
-        if (needsRefresh && !picked.refresh) {
-          // Expired access token with no refresh token: unusable until re-login.
-          quarantineAccount(pool, picked, "access token expired and no refresh token is stored", log)
-          const fb = useFallback(picked.id)
-          if (fb) return fb
-          // No usable fallback: continue with the quarantined token below so
-          // the caller sees the real server response instead of nothing.
-        } else if (needsRefresh) {
-          try {
-            await refreshAccount(pool, picked, log)
-            // Keep the native single-auth entry fresh only when it belongs
-            // to the same Cline user we just refreshed (identity, not token
-            // equality — the token just rotated).
+        const token = await resolveActiveToken(pool, log, {
+          // Keep the native single-auth entry fresh only when it belongs to
+          // the same Cline user we just refreshed (identity, not token
+          // equality — the token just rotated).
+          onRefreshed: async (picked) => {
             const t = tokenOf(picked)
             if (auth?.type === "oauth" && typeof auth.access === "string" && t && sameAccount(auth.access, t)) {
               await provider
@@ -194,25 +121,9 @@ export const ClineFreePlugin: Plugin = async ({ client }) => {
                 })
                 .catch(() => {})
             }
-          } catch (e) {
-            if (e instanceof TerminalAuthError) {
-              // Dead credential (invalid_grant et al.): park it so it stops
-              // failing every Nth request; user re-logins via /connect.
-              quarantineAccount(pool, picked, e.message, log)
-            } else {
-              log("warn", `cline-free: token refresh failed for ${picked.label ?? picked.id}: ${e instanceof Error ? e.message : String(e)} — trying next account`, { accountId: picked.id })
-              picked.lastError = "refresh failed"
-              void savePoolFile(pool).catch(() => {})
-            }
-            const fb = useFallback(picked.id)
-            if (fb) return fb
-          }
-        }
-
-        const token = tokenOf(picked)
+          },
+        })
         if (!token) return {}
-        pool.activeId = picked.id
-        picked.lastUsed = Date.now()
         return { apiKey: withWorkOSPrefix(token), baseURL: CHAT_BASE_URL, headers: baseHeaders, fetch: routedFetch }
       },
       methods: [
@@ -338,87 +249,31 @@ export const ClineFreePlugin: Plugin = async ({ client }) => {
 
     tool: {
       cline_free_status: tool({
-        description:
-          "Show Cline Free account pool status: stored accounts, env accounts, which is active, and 429 cooldowns.",
+        description: TOOL_DESCRIPTIONS.status,
         args: {},
         async execute() {
-          pruneLimits(pool)
-          if (dedupePool(pool)) void savePoolFile(pool).catch(() => {})
-          const candidates = allCandidates(pool)
-          const now = Date.now()
-          // List STORED accounts (not just rotation candidates) so
-          // quarantined entries stay visible with their NEEDS-RELOGIN flag.
-          const lines = pool.accounts.map((a) => {
-            const t = tokenOf(a)
-            const now2 = Date.now()
-            const modelCd = a.modelLimits
-              ? Object.entries(a.modelLimits)
-                  .filter(([, until]) => until > now2)
-                  .map(([m, until]) => `${m}→${new Date(until).toISOString().slice(5, 16)}Z`)
-                  .sort()
-                  .join(", ")
-              : ""
-            const anyLimited = a.limitedUntil && a.limitedUntil > now2
-            const quarantined = !!a.authFailedAt
-            const flags = [
-              a.id === pool.activeId ? "active" : "",
-              modelCd || anyLimited ? "COOLDOWN" : "",
-              modelCd,
-              quarantined ? `NEEDS-RELOGIN${a.authFailedReason ? ` (${a.authFailedReason.slice(0, 80)})` : ""}` : "",
-              a.source,
-            ]
-              .filter(Boolean)
-              .join(" | ")
-            return `- ${a.label ?? a.id} [${a.id}] (${flags}) token ${t ? maskToken(t) : "?"}` +
-              (a.expires ? ` expires ${new Date(a.expires).toISOString()}` : "")
-          })
-          const envCount = candidates.filter((a) => a.id.startsWith("env-")).length
-          const qCount = pool.accounts.filter((a) => a.authFailedAt).length
-          const header = `cline-free pool: ${pool.accounts.length} stored${qCount ? ` (${qCount} need re-login)` : ""} + ${envCount} env → ${candidates.length} rotation candidate(s). File: ${poolFilePath()}`
-          return lines.length > 0 ? `${header}\n${lines.join("\n")}` : `${header}\n(no accounts — run /connect and pick cline-free)`
+          return poolStatusText(pool)
         },
       }),
 
       cline_free_remove: tool({
-        description: "Remove a stored Cline Free account from the rotation pool by id (see cline_free_status). Env accounts cannot be removed here — unset the env var instead.",
+        description: TOOL_DESCRIPTIONS.remove,
         args: {
           id: tool.schema.string().describe("Account id (acc_...) from cline_free_status"),
         },
         async execute(args) {
-          const idx = pool.accounts.findIndex((a) => a.id === args.id)
-          if (idx === -1) return `No stored account with id ${args.id}.`
-          const [removed] = pool.accounts.splice(idx, 1)
-          if (pool.activeId === args.id) delete pool.activeId
-          await savePoolFile(pool).catch(() => {})
-          log("info", `cline-free: removed account ${removed.label ?? removed.id}`, { accountId: args.id })
-          return `Removed ${removed.label ?? removed.id} (${pool.accounts.length} stored left).`
+          return removeAccount(pool, args.id, log)
         },
       }),
 
       cline_free_add_token: tool({
-        description: "Validate and add a Cline token (workos:... or raw) to the rotation pool.",
+        description: TOOL_DESCRIPTIONS.addToken,
         args: {
           token: tool.schema.string().describe("Cline token (workos:... or raw access token)"),
           label: tool.schema.string().optional().describe("Friendly label (defaults to account email)"),
         },
         async execute(args) {
-          const key = args.token?.trim()
-          if (!key) return "No token provided."
-          try {
-            const res = await fetchWithTimeout(`${API_BASE}/api/v1/users/me`, {
-              headers: { Authorization: `Bearer ${withWorkOSPrefix(key)}`, Accept: "application/json" },
-            })
-            if (!res.ok) return `Token rejected by Cline (HTTP ${res.status}). Not added.`
-          } catch (e) {
-            return `Could not reach Cline: ${e instanceof Error ? e.message : String(e)}. Not added.`
-          }
-          const email = await fetchUserEmail(key)
-          const acc = upsertApiAccount(pool, key, args.label?.trim() || email)
-          if (args.label?.trim()) acc.label = args.label.trim()
-          else if (email) acc.label = email
-          await savePoolFile(pool).catch(() => {})
-          log("info", `cline-free: added token ${acc.label ?? acc.id} (${pool.accounts.length} total)`, { accountId: acc.id })
-          return `Added ${acc.label ?? acc.id} [${acc.id}] (${pool.accounts.length} stored total).`
+          return addToken(pool, args.token, args.label, log)
         },
       }),
     },
