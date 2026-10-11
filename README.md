@@ -10,6 +10,23 @@ Live source: `GET https://api.cline.bot/api/v1/ai/cline/recommended-models`
 (`free` array). The plugin fetches it on every startup, so rotations appear
 automatically. Offline it falls back to a bundled list.
 
+## Screenshots
+
+<table>
+<tr>
+<td width="50%" align="center"><img src="docs/screenshots/01-models.png" alt="Model picker filtered to Cline Free models"><br><sub>Cline free models in <code>/models</code></sub></td>
+<td width="50%" align="center"><img src="docs/screenshots/02-variants.png" alt="Reasoning effort variants"><br><sub>Reasoning effort via <code>/variants</code></sub></td>
+</tr>
+<tr>
+<td width="50%" align="center"><img src="docs/screenshots/06-login.png" alt="Cline Free login methods"><br><sub>Three login methods</sub></td>
+<td width="50%" align="center"><img src="docs/screenshots/03-connect.png" alt="Connect dialog listing Cline Free accounts"><br><sub>Connected accounts in the Connect dialog</sub></td>
+</tr>
+<tr>
+<td width="50%" align="center"><img src="docs/screenshots/04-accounts.png" alt="Cline Free account list"><br><sub>Add, rename or delete accounts</sub></td>
+<td width="50%" align="center"><img src="docs/screenshots/05-home.png" alt="Home screen with a Cline Free model selected"><br><sub>Ready to chat with a free model</sub></td>
+</tr>
+</table>
+
 ## Current free rotation (checked 2026-10-11)
 
 | Model id | Notes |
