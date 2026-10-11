@@ -222,8 +222,8 @@ npm publish --access public
   the same request on the next account on 429/401/403 (the failover that
   used to live in a custom `fetch`).
 - **Cline product surface headers** (v0.5.4+): chat requests mirror the
-  official client identity (`User-Agent: Cline/4.1.16`, `X-CLIENT-TYPE`
-  (sent as `opencode`, as 0.6.x did), `X-CLIENT-VERSION`, `X-CORE-VERSION`, `X-PLATFORM*`,
+  official client identity (`User-Agent: Cline/4.1.16`, `X-CLIENT-TYPE:
+  VSCode Extension`, `X-CLIENT-VERSION`, `X-CORE-VERSION`, `X-PLATFORM*`,
   `X-IS-MULTIROOT`, `X-Title: Cline`). The gateway serves native free models
   only to Cline product surfaces; without them it answers
   `403 only available via Cline product surfaces`

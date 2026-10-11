@@ -14,7 +14,7 @@ var CLINE_HEADERS = {
   "HTTP-Referer": "https://cline.bot",
   "X-Title": "Cline",
   "User-Agent": "Cline/4.1.16",
-  "X-CLIENT-TYPE": "opencode",
+  "X-CLIENT-TYPE": "VSCode Extension",
   "X-CLIENT-VERSION": "4.1.16",
   "X-CORE-VERSION": "4.1.16",
   "X-PLATFORM": "vscode",
