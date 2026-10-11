@@ -10,6 +10,7 @@ import {
   describeLimits,
   fetchUserEmail,
   isGenericLabel,
+  modelLimitUntil,
   normalizeEmailLabel,
   payloadEmail,
   probeQuarantinedAccounts,
@@ -94,13 +95,14 @@ export async function resolveActiveToken(pool: PoolFile, log: Logger, opts: Reso
     const candidates = allCandidates(pool)
     if (candidates.length === 0) return undefined
     // Every account is cooling down: hand the request to the fetch router
-    // with the earliest-reset account — it selects per model (accounts
-    // limited on THIS model still block, others qualify), so a 429 on glm
-    // doesn't block muse.
-    const earliest = [...candidates].sort((a, b) => (b.limitedUntil ?? 0) - (a.limitedUntil ?? 0))[0]
+    // with the earliest-reset account (for the request's model when known) —
+    // it selects per model (accounts limited on THIS model still block,
+    // others qualify), so a 429 on glm doesn't block muse.
+    const resetOf = (a: PoolAccount) => modelLimitUntil(a, opts.model) ?? a.limitedUntil ?? 0
+    const earliest = [...candidates].sort((a, b) => resetOf(a) - resetOf(b))[0]
     const t = tokenOf(earliest)
     if (!t) return undefined
-    log("warn", `cline-free: all accounts cooling down — next reset ${new Date(earliest.limitedUntil ?? Date.now()).toISOString()}${describeLimits(pool)}`)
+    log("warn", `cline-free: all accounts cooling down — next reset ${new Date(resetOf(earliest) || Date.now()).toISOString()}${describeLimits(pool)}`)
     return t
   }
 

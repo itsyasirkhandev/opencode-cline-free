@@ -1291,10 +1291,11 @@ async function resolveActiveToken(pool, log2, opts = {}) {
   if (!picked) {
     const candidates = allCandidates(pool);
     if (candidates.length === 0) return void 0;
-    const earliest = [...candidates].sort((a, b) => (b.limitedUntil ?? 0) - (a.limitedUntil ?? 0))[0];
+    const resetOf = (a) => modelLimitUntil(a, opts.model) ?? a.limitedUntil ?? 0;
+    const earliest = [...candidates].sort((a, b) => resetOf(a) - resetOf(b))[0];
     const t = tokenOf(earliest);
     if (!t) return void 0;
-    log2("warn", `cline-free: all accounts cooling down \u2014 next reset ${new Date(earliest.limitedUntil ?? Date.now()).toISOString()}${describeLimits(pool)}`);
+    log2("warn", `cline-free: all accounts cooling down \u2014 next reset ${new Date(resetOf(earliest) || Date.now()).toISOString()}${describeLimits(pool)}`);
     return t;
   }
   const useFallback = (exceptId) => {

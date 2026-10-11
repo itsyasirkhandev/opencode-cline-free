@@ -182,6 +182,19 @@ test("an account capped on one model still serves the other models", () => {
   assert.equal(selectAccount(pool, Date.now(), "cline-free/muse-spark-1.3-contributor"), undefined)
 })
 
+test("when every account is cooling down, the earliest reset for the request's model is picked", async () => {
+  const pool = poolOf(2)
+  const M = "cline-free/mimo-v2.6-flash"
+  markAccountLimited(pool, "a0", 2 * 3600_000, log, undefined, M)
+  markAccountLimited(pool, "a1", 1 * 3600_000, log, undefined, M)
+  assert.equal(await resolveActiveToken(pool, log, { model: M }), "sk_test_1")
+  // a1 resets last overall (other model), but first for M.
+  markAccountLimited(pool, "a1", 9 * 3600_000, log, undefined, "cline-free/muse-spark-1.3-contributor")
+  markAccountLimited(pool, "a0", 3 * 3600_000, log, undefined, "cline-free/muse-spark-1.3-contributor")
+  assert.equal(await resolveActiveToken(pool, log, { model: M }), "sk_test_1")
+  assert.equal(await resolveActiveToken(pool, log, { model: "cline-free/muse-spark-1.3-contributor" }), "sk_test_0")
+})
+
 test("first pick skips out-of-credit accounts for paid models only, and status shows it", async () => {
   const pool = poolOf(2)
   markNoCredits(pool, "a0", log)
