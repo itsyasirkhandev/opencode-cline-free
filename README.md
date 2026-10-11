@@ -1,7 +1,10 @@
 # opencode-cline-free
 
-**v0.6.2** · Use Cline's rotating **free models** inside OpenCode with your Cline account —
+**v0.7.0** · Use Cline's rotating **free models** inside OpenCode V2 with your Cline account —
 same quota you see tagged `FREE` in Cline VSCode/CLI.
+
+> **Requires OpenCode V2 (2.x).** OpenCode 1.x users: stay on 0.6.3, the
+> last V1 build (`git checkout 29f68b9`).
 
 Live source: `GET https://api.cline.bot/api/v1/ai/cline/recommended-models`
 (`free` array). The plugin fetches it on every startup, so rotations appear
@@ -59,12 +62,19 @@ mkdir -p .opencode/plugins
 cp dist/cline-free.js .opencode/plugins/cline-free.js
 ```
 
+Or load the clone directly (V2 only accepts plugin **directories** in config,
+not single files):
+
+```json
+{ "plugins": ["/path/to/opencode-cline-free"] }
+```
+
 Restart OpenCode.
 
 ## Login
 
 ```text
-/connect
+/connect            (or: opencode auth login)
 # pick "cline-free", then one of:
 # 1. Cline account (free models, recommended)         <- browser device-code flow
 # 2. Reuse Cline CLI login (this machine, 1 confirm)  <- fastest if `cline auth` was run here
@@ -123,7 +133,9 @@ method 2 imports its OAuth tokens directly — the account email is shown,
 you just confirm, no browser code. Expired tokens are refreshed automatically.
 
 Manual alternative: `/connect` → `cline-free` → `Cline token (manual)` and
-paste a `workos:...` token, or set:
+paste a `workos:...` token (OpenCode V2 has no hook to validate a pasted key
+at connect time; a bad token shows up on the first request — the
+`cline_free_add_token` tool validates before saving), or set:
 
 ```bash
 export CLINE_API_KEY="workos:..."
@@ -164,7 +176,7 @@ single-file bundle for copy-installs and is committed.
 
 | File | Purpose |
 |---|---|
-| `src/core/` | runtime-agnostic code shared by every OpenCode version (no `@opencode-ai/*` imports) |
+| `src/core/` | runtime-agnostic code (no `@opencode/*` imports) |
 | `src/core/models.ts` | one registry with every model's name, status (free/paid/stale), cost, limits, inputs, reasoning efforts |
 | `src/core/modelList.ts` | live free list + on-disk cache (`cline-free-models.json`, override `CLINE_FREE_MODELS_FILE`) |
 | `src/core/http.ts` / `src/core/auth.ts` | timeouts, retry classification, device-code login, token refresh |
@@ -172,7 +184,7 @@ single-file bundle for copy-installs and is committed.
 | `src/core/router.ts` | provider-scoped fetch with 429/401 failover |
 | `src/core/account.ts` | account selection, refresh and fallback (shared by every adapter) |
 | `src/core/tools.ts` | tool logic (status / remove / add token) |
-| `src/v1.ts` | OpenCode V1 adapter: hooks, login methods, tool wrappers |
+| `src/v2.ts` | OpenCode V2 adapter: provider/models, login methods, HTTP hooks, tools (type-only `@opencode/plugin` import) |
 
 ```bash
 npm ci
@@ -191,27 +203,33 @@ Not published yet. When ready:
 
 ```bash
 npm publish --access public
-# then in opencode.json: { "plugin": ["opencode-cline-free"] }
+# then in opencode.json: { "plugins": ["opencode-cline-free"] }
 ```
 
 ## How it works
 
-- `config` hook injects provider `cline-free`
-  (`@ai-sdk/openai-compatible`, `baseURL https://api.cline.bot/api/v1`)
-  plus the live `free` models at $0 cost.
-  (Config-hook injection is used because OpenCode currently skips
-  `provider.models` hooks for non-models.dev providers.)
-  User-declared models in `opencode.json` always win; the plugin only adds
-  missing free ids.
+- `provider.transform` registers provider `cline-free`
+  (`@opencode/ai/providers/openai-compatible`,
+  `baseURL https://api.cline.bot/api/v1`) plus the live `free` models, each
+  with its reasoning efforts as V2 variants. A background refresh of the
+  free list calls `provider.reload()` so a rotation fetched after startup
+  shows up without a restart.
+- `integration.transform` adds the three login methods to the `cline-free`
+  integration; logins land in the same account pool file as 0.6.x, so
+  existing accounts keep working after the upgrade.
+- A provider-scoped `http.request` hook stamps the selected pool account's
+  `Authorization: Bearer workos:...`; a scoped `http.response` hook replays
+  the same request on the next account on 429/401/403 (the failover that
+  used to live in a custom `fetch`).
 - **Cline product surface headers** (v0.5.4+): chat requests mirror the
-  official client identity (`User-Agent: Cline/4.1.16`, `X-CLIENT-TYPE:
-  VSCode Extension`, `X-CLIENT-VERSION`, `X-CORE-VERSION`, `X-PLATFORM*`,
+  official client identity (`User-Agent: Cline/4.1.16`, `X-CLIENT-TYPE`
+  (sent as `opencode`, as 0.6.x did), `X-CLIENT-VERSION`, `X-CORE-VERSION`, `X-PLATFORM*`,
   `X-IS-MULTIROOT`, `X-Title: Cline`). The gateway serves native free models
   only to Cline product surfaces; without them it answers
   `403 only available via Cline product surfaces`
   ([cline/cline#13593](https://github.com/cline/cline/issues/13593)).
   Verified 2026-09-21 against the live API.
-- `auth` hook implements Cline's WorkOS device-code OAuth
+- The login methods implement Cline's WorkOS device-code OAuth
   (same flow as Pi's `pi-cline` extension) + manual token entry,
   refreshes via `/api/v1/auth/refresh`, and sends
   `Authorization: Bearer workos:...`.
@@ -228,6 +246,7 @@ npm publish --access public
 
 | Version | Changes |
 |---|---|
+| **0.7.0** | Runs on **OpenCode V2** (`@opencode/plugin` 2.x): models, login methods, 429/401 failover and the 3 tools ported to the V2 API. **V1 support dropped** — OpenCode 1.x users stay on 0.6.3. Config key is now `plugins` |
 | **0.6.2** | Sync free rotation (2026-10-06): `stealth/space-bunny-alpha` rotated out (free list is now mimo-v2.6-flash + muse-spark-1.3-contributor); MiMo efforts reduced to `none`/`high` since its reasoning is on/off only |
 | **0.6.1** | `cline-free/deepseek-v4.1-flash` removed from the free fallback (left the free list 2026-10-05, now paid); new free models get limits, inputs and price automatically from Cline's public model catalog, cached with the list |
 | **0.6.3** | Internal refactor: shared code moved to `src/core/`, OpenCode V1 glue isolated in `src/v1.ts` (prep for OpenCode V2 support). No behaviour change |

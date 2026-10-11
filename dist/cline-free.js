@@ -1,6 +1,3 @@
-// src/v1.ts
-import { tool } from "@opencode-ai/plugin";
-
 // src/core/constants.ts
 var PROVIDER_ID = "cline-free";
 var API_BASE = "https://api.cline.bot";
@@ -12,6 +9,18 @@ var WORKOS_PREFIX = "workos:";
 var REFRESH_BUFFER_MS = 5 * 60 * 1e3;
 var ACCOUNTS_FILE_NAME = "cline-free-accounts.json";
 var DAY_MS = 24 * 60 * 60 * 1e3;
+var CLINE_HEADERS = {
+  Accept: "application/json",
+  "HTTP-Referer": "https://cline.bot",
+  "X-Title": "Cline",
+  "User-Agent": "Cline/4.1.16",
+  "X-CLIENT-TYPE": "opencode",
+  "X-CLIENT-VERSION": "4.1.16",
+  "X-CORE-VERSION": "4.1.16",
+  "X-PLATFORM": "vscode",
+  "X-PLATFORM-VERSION": "4.1.16",
+  "X-IS-MULTIROOT": "false"
+};
 
 // src/core/http.ts
 function withWorkOSPrefix(token) {
@@ -183,16 +192,16 @@ async function registerWorkOSTokens(tokens) {
         body: JSON.stringify(tokens)
       });
       if (!res.ok) {
-        const text = await res.text().catch(() => "");
+        const text2 = await res.text().catch(() => "");
         let code;
         let detail = `${res.status} ${res.statusText}`;
-        if (text) {
+        if (text2) {
           try {
-            const j = JSON.parse(text);
+            const j = JSON.parse(text2);
             code = typeof j.error === "string" ? j.error.toLowerCase() : void 0;
-            detail = (j.error_description ?? j.message ?? j.error ?? text).slice(0, 200);
+            detail = (j.error_description ?? j.message ?? j.error ?? text2).slice(0, 200);
           } catch {
-            detail = text.slice(0, 200);
+            detail = text2.slice(0, 200);
           }
         }
         throw classifyHttpFailure(res.status, code, "Cline token registration", detail);
@@ -227,16 +236,16 @@ async function refreshClineTokenOnce(refresh, post = (url, init) => fetchWithTim
     throw new TransientAuthError(`Cline token refresh failed: ${e instanceof Error ? e.message : String(e)}`);
   }
   if (!res.ok) {
-    const text = await res.text().catch(() => "");
+    const text2 = await res.text().catch(() => "");
     let code;
     let detail = `${res.status} ${res.statusText}`;
-    if (text) {
+    if (text2) {
       try {
-        const j = JSON.parse(text);
+        const j = JSON.parse(text2);
         code = typeof j.error === "string" ? j.error.toLowerCase() : void 0;
-        detail = (j.error_description ?? j.message ?? j.error ?? text).slice(0, 200);
+        detail = (j.error_description ?? j.message ?? j.error ?? text2).slice(0, 200);
       } catch {
-        detail = text.slice(0, 200);
+        detail = text2.slice(0, 200);
       }
     }
     throw classifyHttpFailure(res.status, code, "Cline token refresh", detail);
@@ -923,7 +932,7 @@ function upsertApiAccount(pool, key, label, source = "api") {
   return pool.accounts.find((a) => a.id === fresh.id) ?? fresh;
 }
 var refreshFlight = /* @__PURE__ */ new Map();
-async function refreshAccount(pool, acc, log) {
+async function refreshAccount(pool, acc, log2) {
   const inflight = refreshFlight.get(acc.id);
   if (inflight) {
     await inflight;
@@ -945,10 +954,10 @@ async function refreshAccount(pool, acc, log) {
         acc.refresh = peer.refresh;
         acc.expires = peer.expires;
         clearAuthHealth(acc);
-        log("info", `cline-free: adopted peer-refreshed tokens for ${acc.label ?? acc.id}`);
+        log2("info", `cline-free: adopted peer-refreshed tokens for ${acc.label ?? acc.id}`);
         return;
       }
-      const next = await refreshClineToken(refreshToken, { label: acc.label ?? acc.id, log });
+      const next = await refreshClineToken(refreshToken, { label: acc.label ?? acc.id, log: log2 });
       acc.access = next.access;
       acc.refresh = next.refresh;
       acc.expires = next.expires;
@@ -963,20 +972,20 @@ async function refreshAccount(pool, acc, log) {
     refreshFlight.delete(acc.id);
   }
 }
-function quarantineAccount(pool, acc, reason, log) {
+function quarantineAccount(pool, acc, reason, log2) {
   acc.authFailedAt = Date.now();
   acc.authFailedReason = reason;
   delete acc.limitedUntil;
   void savePoolFile(pool).catch(() => {
   });
-  log(
+  log2(
     "error",
     `cline-free: account ${acc.label ?? acc.id} needs re-login (${reason}). Run /connect \u2192 cline-free and log in again; rotation continues on the remaining accounts.`,
     { accountId: acc.id }
   );
 }
 var PROBE_INTERVAL_MS = 15 * 60 * 1e3;
-async function probeQuarantinedAccounts(pool, log) {
+async function probeQuarantinedAccounts(pool, log2) {
   const now = Date.now();
   let changed = false;
   for (const acc of pool.accounts) {
@@ -991,7 +1000,7 @@ async function probeQuarantinedAccounts(pool, log) {
           delete acc.authFailedAt;
           delete acc.authFailedReason;
           delete acc.lastProbeAt;
-          log("info", `cline-free: account ${acc.label ?? acc.id} recovered on probe \u2014 back in rotation`, {
+          log2("info", `cline-free: account ${acc.label ?? acc.id} recovered on probe \u2014 back in rotation`, {
             accountId: acc.id
           });
         }
@@ -1017,7 +1026,7 @@ function selectAccount(pool, now = Date.now(), model) {
   rrCursors.set(key, (cursor + 1) % healthy.length);
   return pick;
 }
-function markAccountLimited(pool, id, retryAfterMs, log, detail, model) {
+function markAccountLimited(pool, id, retryAfterMs, log2, detail, model) {
   const acc = pool.accounts.find((a) => a.id === id);
   const until = Date.now() + (retryAfterMs ?? nextUtcMidnightMs() - Date.now());
   const name = acc?.label ?? id;
@@ -1031,7 +1040,7 @@ function markAccountLimited(pool, id, retryAfterMs, log, detail, model) {
     }
     acc.lastError = `429${detail ? `: ${detail}` : ""}`;
   }
-  log(
+  log2(
     "warn",
     `cline-free: account ${name} hit 429${model ? ` on ${model}` : ""} \u2014 cooling down until ${new Date(until).toISOString()}${detail ? ` (${detail})` : ""}`,
     { accountId: id, limitedUntil: until }
@@ -1146,7 +1155,7 @@ async function writeModelsCache(free, meta = {}) {
     throw e;
   }
 }
-async function refreshAndCache(timeoutMs, log) {
+async function refreshAndCache(timeoutMs, log2) {
   const live = await fetchLiveFreeModels(timeoutMs);
   if (!live) return void 0;
   const entries = withExtraModels(live);
@@ -1155,17 +1164,17 @@ async function refreshAndCache(timeoutMs, log) {
     timeoutMs
   ).catch(() => ({}));
   await writeModelsCache(live, meta).catch(
-    (e) => log?.("warn", `cline-free: could not save model cache: ${e instanceof Error ? e.message : String(e)}`)
+    (e) => log2?.("warn", `cline-free: could not save model cache: ${e instanceof Error ? e.message : String(e)}`)
   );
   return { entries, meta };
 }
-async function loadFreeModels(log, timeoutMs = 12e3) {
+async function loadFreeModels(log2, timeoutMs = 12e3) {
   const cached = await readModelsCache();
   if (cached) {
-    const refreshed = refreshAndCache(timeoutMs, log).catch(() => void 0);
+    const refreshed = refreshAndCache(timeoutMs, log2).catch(() => void 0);
     return { entries: withExtraModels(cached.entries), meta: cached.meta, source: "cache", refreshed };
   }
-  const live = await refreshAndCache(timeoutMs, log).catch(() => void 0);
+  const live = await refreshAndCache(timeoutMs, log2).catch(() => void 0);
   if (live) return { ...live, source: "live", refreshed: Promise.resolve(void 0) };
   return { entries: withExtraModels(FALLBACK_FREE), meta: {}, source: "fallback", refreshed: Promise.resolve(void 0) };
 }
@@ -1205,10 +1214,10 @@ function mergeNativeAuth(pool, auth) {
     });
   }
 }
-async function resolveActiveToken(pool, log, opts = {}) {
+async function resolveActiveToken(pool, log2, opts = {}) {
   let picked = selectAccount(pool, Date.now());
   if (!picked && pool.accounts.some((a) => a.authFailedAt)) {
-    await probeQuarantinedAccounts(pool, log);
+    await probeQuarantinedAccounts(pool, log2);
     picked = selectAccount(pool, Date.now());
   }
   if (!picked) {
@@ -1217,7 +1226,7 @@ async function resolveActiveToken(pool, log, opts = {}) {
     const earliest = [...candidates].sort((a, b) => (b.limitedUntil ?? 0) - (a.limitedUntil ?? 0))[0];
     const t = tokenOf(earliest);
     if (!t) return void 0;
-    log("warn", `cline-free: all accounts cooling down \u2014 next reset ${new Date(earliest.limitedUntil ?? Date.now()).toISOString()}${describeLimits(pool)}`);
+    log2("warn", `cline-free: all accounts cooling down \u2014 next reset ${new Date(earliest.limitedUntil ?? Date.now()).toISOString()}${describeLimits(pool)}`);
     return t;
   }
   const useFallback = (exceptId) => {
@@ -1234,18 +1243,18 @@ async function resolveActiveToken(pool, log, opts = {}) {
   };
   const needsRefresh = !!picked.access && typeof picked.expires === "number" && picked.expires - Date.now() < REFRESH_BUFFER_MS;
   if (needsRefresh && !picked.refresh) {
-    quarantineAccount(pool, picked, "access token expired and no refresh token is stored", log);
+    quarantineAccount(pool, picked, "access token expired and no refresh token is stored", log2);
     const fb = useFallback(picked.id);
     if (fb) return fb;
   } else if (needsRefresh) {
     try {
-      await refreshAccount(pool, picked, log);
+      await refreshAccount(pool, picked, log2);
       await opts.onRefreshed?.(picked);
     } catch (e) {
       if (e instanceof TerminalAuthError) {
-        quarantineAccount(pool, picked, e.message, log);
+        quarantineAccount(pool, picked, e.message, log2);
       } else {
-        log("warn", `cline-free: token refresh failed for ${picked.label ?? picked.id}: ${e instanceof Error ? e.message : String(e)} \u2014 trying next account`, { accountId: picked.id });
+        log2("warn", `cline-free: token refresh failed for ${picked.label ?? picked.id}: ${e instanceof Error ? e.message : String(e)} \u2014 trying next account`, { accountId: picked.id });
         picked.lastError = "refresh failed";
         void savePoolFile(pool).catch(() => {
         });
@@ -1259,6 +1268,37 @@ async function resolveActiveToken(pool, log, opts = {}) {
   pool.activeId = picked.id;
   picked.lastUsed = Date.now();
   return token;
+}
+var oauthOwner = (pool, access) => pool.accounts.find((a) => {
+  const t = tokenOf(a);
+  return !!t && sameAccount(t, access);
+});
+function mergeConnectionCredential(pool, credential) {
+  if (credential?.type === "key" && "key" in credential) {
+    mergeNativeAuth(pool, { type: "api", key: credential.key });
+    return;
+  }
+  if (credential?.type !== "oauth" || !("access" in credential)) return;
+  const owner = oauthOwner(pool, credential.access);
+  if (owner && (owner.expires ?? 0) >= credential.expires) return;
+  const email = credential.metadata?.email;
+  mergeNativeAuth(pool, {
+    type: "oauth",
+    access: credential.access,
+    refresh: credential.refresh,
+    expires: credential.expires,
+    accountId: typeof email === "string" ? email : void 0
+  });
+}
+async function refreshViaPool(pool, credential, log2) {
+  const acc = oauthOwner(pool, credential.access) ?? upsertOAuthAccount(pool, credential);
+  const fresh = typeof acc.expires === "number" && acc.expires - Date.now() >= REFRESH_BUFFER_MS;
+  if (!fresh) await refreshAccount(pool, acc, log2);
+  const access = tokenOf(acc);
+  if (!access || !acc.refresh || typeof acc.expires !== "number") {
+    throw new TerminalAuthError(`account ${acc.label ?? acc.id} has no usable session \u2014 re-login required`);
+  }
+  return { access, refresh: acc.refresh, expires: acc.expires };
 }
 function tidyPool(pool) {
   if (pruneLimits(pool) || dedupePool(pool)) void savePoolFile(pool).catch(() => {
@@ -1298,17 +1338,17 @@ function poolStatusText(pool) {
 ${lines.join("\n")}` : `${header}
 (no accounts \u2014 run /connect and pick cline-free)`;
 }
-async function removeAccount(pool, id, log) {
+async function removeAccount(pool, id, log2) {
   const idx = pool.accounts.findIndex((a) => a.id === id);
   if (idx === -1) return `No stored account with id ${id}.`;
   const [removed] = pool.accounts.splice(idx, 1);
   if (pool.activeId === id) delete pool.activeId;
   await savePoolFile(pool).catch(() => {
   });
-  log("info", `cline-free: removed account ${removed.label ?? removed.id}`, { accountId: id });
+  log2("info", `cline-free: removed account ${removed.label ?? removed.id}`, { accountId: id });
   return `Removed ${removed.label ?? removed.id} (${pool.accounts.length} stored left).`;
 }
-async function addToken(pool, token, label, log) {
+async function addToken(pool, token, label, log2) {
   const key = token?.trim();
   if (!key) return "No token provided.";
   try {
@@ -1325,12 +1365,12 @@ async function addToken(pool, token, label, log) {
   else if (email) acc.label = email;
   await savePoolFile(pool).catch(() => {
   });
-  log("info", `cline-free: added token ${acc.label ?? acc.id} (${pool.accounts.length} total)`, { accountId: acc.id });
+  log2("info", `cline-free: added token ${acc.label ?? acc.id} (${pool.accounts.length} total)`, { accountId: acc.id });
   return `Added ${acc.label ?? acc.id} [${acc.id}] (${pool.accounts.length} stored total).`;
 }
 
 // src/core/router.ts
-function createRoutedFetch(pool, log, baseFetch = (input, init) => globalThis.fetch(input, init)) {
+function createRoutedFetch(pool, log2, baseFetch = (input, init) => globalThis.fetch(input, init)) {
   const origFetch = baseFetch;
   return (async (input, init) => {
     let url;
@@ -1459,7 +1499,7 @@ function createRoutedFetch(pool, log, baseFetch = (input, init) => globalThis.fe
             staleCache = true;
             accountId = owner.id;
             acc = owner;
-            log("info", `cline-free: stale cached token (${maskToken(token)}) matched to ${owner.label ?? owner.id} by user key \u2014 replaying with its current session`);
+            log2("info", `cline-free: stale cached token (${maskToken(token)}) matched to ${owner.label ?? owner.id} by user key \u2014 replaying with its current session`);
           }
         }
         if (staleCache && acc) {
@@ -1472,7 +1512,7 @@ function createRoutedFetch(pool, log, baseFetch = (input, init) => globalThis.fe
             acc.lastUsed = Date.now();
             void savePoolFile(pool).catch(() => {
             });
-            log("info", `cline-free: request recovered on ${acc.label ?? acc.id} with its current session (stale cached token)`);
+            log2("info", `cline-free: request recovered on ${acc.label ?? acc.id} with its current session (stale cached token)`);
             await drain(res).catch(() => {
             });
             return res2;
@@ -1485,7 +1525,7 @@ function createRoutedFetch(pool, log, baseFetch = (input, init) => globalThis.fe
             });
             await drain(res2).catch(() => {
             });
-            markAccountLimited(pool, acc.id, parseRetryAfterMs(res2) ?? parseRetryAfterFromBody(detail22), log, detail22, reqModel);
+            markAccountLimited(pool, acc.id, parseRetryAfterMs(res2) ?? parseRetryAfterFromBody(detail22), log2, detail22, reqModel);
             continue;
           }
           lastAuthRes = keepForReturn(res2);
@@ -1497,7 +1537,7 @@ function createRoutedFetch(pool, log, baseFetch = (input, init) => globalThis.fe
         if (acc?.refresh && !refreshedInRequest.has(acc.id)) {
           refreshedInRequest.add(acc.id);
           try {
-            await refreshAccount(pool, acc, log);
+            await refreshAccount(pool, acc, log2);
             const fresh = tokenOf(acc);
             if (fresh) {
               const h2 = new Headers(headers);
@@ -1509,8 +1549,8 @@ function createRoutedFetch(pool, log, baseFetch = (input, init) => globalThis.fe
                 void savePoolFile(pool).catch(() => {
                 });
                 if (attempt > 0)
-                  log("info", `cline-free: request recovered on ${acc.label ?? acc.id} after re-auth (attempt ${attempt + 1})`);
-                else log("info", `cline-free: request recovered on ${acc.label ?? acc.id} after silent refresh`);
+                  log2("info", `cline-free: request recovered on ${acc.label ?? acc.id} after re-auth (attempt ${attempt + 1})`);
+                else log2("info", `cline-free: request recovered on ${acc.label ?? acc.id} after silent refresh`);
                 await drain(res).catch(() => {
                 });
                 return res2;
@@ -1523,7 +1563,7 @@ function createRoutedFetch(pool, log, baseFetch = (input, init) => globalThis.fe
                 });
                 await drain(res2).catch(() => {
                 });
-                markAccountLimited(pool, acc.id, parseRetryAfterMs(res2) ?? parseRetryAfterFromBody(detail22), log, detail22, reqModel);
+                markAccountLimited(pool, acc.id, parseRetryAfterMs(res2) ?? parseRetryAfterFromBody(detail22), log2, detail22, reqModel);
                 continue;
               }
               const snippet22 = await readSnippet(res2);
@@ -1536,7 +1576,7 @@ function createRoutedFetch(pool, log, baseFetch = (input, init) => globalThis.fe
                 pool,
                 acc,
                 `Cline rejected refreshed token (HTTP ${res2.status}${cleanDetail(snippet22) ? `: ${cleanDetail(snippet22)}` : ""})`,
-                log
+                log2
               );
               continue;
             }
@@ -1545,9 +1585,9 @@ function createRoutedFetch(pool, log, baseFetch = (input, init) => globalThis.fe
             await drain(res).catch(() => {
             });
             if (e instanceof TerminalAuthError) {
-              quarantineAccount(pool, acc, e.message, log);
+              quarantineAccount(pool, acc, e.message, log2);
             } else {
-              log("warn", `cline-free: token refresh failed for ${acc.label ?? acc.id}: ${e instanceof Error ? e.message : String(e)} \u2014 trying next account`, { accountId: acc.id });
+              log2("warn", `cline-free: token refresh failed for ${acc.label ?? acc.id}: ${e instanceof Error ? e.message : String(e)} \u2014 trying next account`, { accountId: acc.id });
               acc.lastError = "refresh failed";
               void savePoolFile(pool).catch(() => {
               });
@@ -1559,9 +1599,9 @@ function createRoutedFetch(pool, log, baseFetch = (input, init) => globalThis.fe
           lastAuthRes = keepForReturn(res);
           await drain(res).catch(() => {
           });
-          quarantineAccount(pool, acc, `Cline returned HTTP ${res.status}${detail2 ? `: ${detail2}` : ""}`, log);
+          quarantineAccount(pool, acc, `Cline returned HTTP ${res.status}${detail2 ? `: ${detail2}` : ""}`, log2);
         } else {
-          log("warn", `cline-free: 401/403 on untracked identity (${maskToken(token)})${detail2 ? ` \u2014 ${detail2}` : ""}`);
+          log2("warn", `cline-free: 401/403 on untracked identity (${maskToken(token)})${detail2 ? ` \u2014 ${detail2}` : ""}`);
           return res;
         }
         continue;
@@ -1576,7 +1616,7 @@ function createRoutedFetch(pool, log, baseFetch = (input, init) => globalThis.fe
             });
           }
         }
-        if (attempt > 0) log("info", `cline-free: request recovered on ${pool.accounts.find((a) => a.id === accountId)?.label ?? "fallback account"} after 429/re-auth (attempt ${attempt + 1})`);
+        if (attempt > 0) log2("info", `cline-free: request recovered on ${pool.accounts.find((a) => a.id === accountId)?.label ?? "fallback account"} after 429/re-auth (attempt ${attempt + 1})`);
         return res;
       }
       const snippet = await readSnippet(res);
@@ -1586,20 +1626,20 @@ function createRoutedFetch(pool, log, baseFetch = (input, init) => globalThis.fe
       const retryAfter = parseRetryAfterMs(res) ?? parseRetryAfterFromBody(cleanDetail(snippet));
       const detail = cleanDetail(snippet);
       if (accountId && pool.accounts.some((a) => a.id === accountId)) {
-        markAccountLimited(pool, accountId, retryAfter, log, detail, reqModel);
+        markAccountLimited(pool, accountId, retryAfter, log2, detail, reqModel);
       } else {
-        log("warn", `cline-free: 429 on untracked identity (${maskToken(token)})${detail ? ` \u2014 ${detail}` : ""}`);
+        log2("warn", `cline-free: 429 on untracked identity (${maskToken(token)})${detail ? ` \u2014 ${detail}` : ""}`);
         break;
       }
     }
     if (lastAuthRes && !lastRes) {
       const quarantined = pool.accounts.filter((a) => a.authFailedAt).map((a) => `${a.label ?? a.id}`).join(", ");
-      log("error", `cline-free: all ${tried.size} account(s) rejected auth (401/403). ${quarantined ? `Quarantined: ${quarantined}. ` : ""}Run /connect \u2192 cline-free and log in again; rotation continues when a healthy account exists.`);
+      log2("error", `cline-free: all ${tried.size} account(s) rejected auth (401/403). ${quarantined ? `Quarantined: ${quarantined}. ` : ""}Run /connect \u2192 cline-free and log in again; rotation continues when a healthy account exists.`);
       return lastAuthRes;
     }
     if (lastRes) {
       const waiting = pool.accounts.filter((a) => a.limitedUntil && a.limitedUntil > Date.now()).map((a) => `${a.label ?? a.id}\u2192${new Date(a.limitedUntil).toISOString()}`).join(", ");
-      log("error", `cline-free: all ${tried.size} account(s) hit 429 daily quota. ${waiting ? `Cooling: ${waiting}. ` : ""}Add another Cline account via /connect to keep going.`);
+      log2("error", `cline-free: all ${tried.size} account(s) hit 429 daily quota. ${waiting ? `Cooling: ${waiting}. ` : ""}Add another Cline account via /connect to keep going.`);
       const earliest = [...pool.accounts].filter((a) => tokenOf(a)).sort((a, b) => (a.limitedUntil ?? 0) - (b.limitedUntil ?? 0))[0];
       const t = earliest ? tokenOf(earliest) : void 0;
       if (!paid && earliest && t) {
@@ -1616,13 +1656,93 @@ function createRoutedFetch(pool, log, baseFetch = (input, init) => globalThis.fe
     return origFetch(input, init);
   });
 }
+function needsFailover(status) {
+  return status === 401 || status === 403 || status === 429;
+}
+async function recoverResponse(pool, log2, request, response, baseFetch = (input, init) => globalThis.fetch(input, init)) {
+  if (!needsFailover(response.status) || !isRoutableUrl(request.url)) return response;
+  const originalAuth = request.headers.get("authorization") ?? "";
+  let reused = false;
+  const replayFetch = (async (input, init) => {
+    const auth = new Headers(init?.headers ?? (input instanceof Request ? input.headers : void 0)).get("authorization") ?? "";
+    if (!reused && auth === originalAuth) {
+      reused = true;
+      return response;
+    }
+    return baseFetch(input, init);
+  });
+  return createRoutedFetch(pool, log2, replayFetch)(request);
+}
 
-// src/v1.ts
-var ClineFreePlugin = async ({ client }) => {
-  const log = (level, message, extra) => {
-    void client.app.log({ body: { service: "cline-free", level, message, ...extra ? { extra } : {} } }).catch(() => {
-    });
+// src/v2.ts
+var providerID = PROVIDER_ID;
+var DEVICE_METHOD = "device";
+var CLI_METHOD = "cli";
+var log = (level, message, extra) => {
+  const line = extra ? `${message} ${JSON.stringify(extra)}` : message;
+  if (level === "error") console.error(line);
+  else if (level === "warn") console.warn(line);
+  else console.info(line);
+};
+function toModelInfo(entry, auto) {
+  const config = modelConfig(entry, auto);
+  const id = entry.id;
+  const usd = (n) => n;
+  return {
+    id,
+    modelID: id,
+    providerID,
+    name: config.name,
+    capabilities: { tools: config.tool_call, input: config.modalities.input, output: config.modalities.output },
+    ...config.options ? { settings: { reasoningEffort: config.options.reasoningEffort } } : {},
+    variants: Object.entries(config.variants ?? {}).map(([level, options]) => ({
+      id: level,
+      settings: { reasoningEffort: options.reasoningEffort }
+    })),
+    time: { released: 0 },
+    cost: [
+      {
+        input: usd(config.cost.input),
+        output: usd(config.cost.output),
+        cache: { read: usd(config.cost.cache_read), write: usd(config.cost.cache_write) }
+      }
+    ],
+    status: "active",
+    enabled: true,
+    limit: { context: config.limit.context, output: config.limit.output }
   };
+}
+function providerInput(entries, meta) {
+  return {
+    info: {
+      id: providerID,
+      integrationID: PROVIDER_ID,
+      name: "Cline Free",
+      // Always listed: the account pool (not V2's single credential) decides
+      // which Cline account a request uses.
+      activation: "enabled",
+      package: "@opencode/ai/providers/openai-compatible",
+      settings: { baseURL: CHAT_BASE_URL },
+      headers: { ...CLINE_HEADERS }
+    },
+    models: entries.map((entry) => toModelInfo(entry, meta[entry.id]))
+  };
+}
+var oauthCredential = (methodID, creds, email) => ({
+  type: "oauth",
+  methodID,
+  access: creds.access,
+  refresh: creds.refresh,
+  expires: creds.expires,
+  ...email ? { metadata: { email } } : {}
+});
+var objectSchema = (properties, required) => ({ type: "object", properties, required, additionalProperties: false });
+var text = (input, key) => {
+  const value = input?.[key];
+  return typeof value === "string" ? value : void 0;
+};
+var setup = async (ctx) => {
+  let disposed = false;
   const pool = await loadPoolFile();
   {
     const pruned = pruneLimits(pool);
@@ -1631,232 +1751,149 @@ var ClineFreePlugin = async ({ client }) => {
     });
     if (deduped) log("info", `cline-free: removed duplicate login(s) \u2014 ${pool.accounts.length} unique account(s) left`);
   }
-  const routedFetch = createRoutedFetch(pool, log);
-  const { entries: free, meta, source, refreshed } = await loadFreeModels(log);
-  const buildModels = (list, autoMeta) => {
-    const out = {};
-    for (const entry of list) out[entry.id] = modelConfig(entry, autoMeta[entry.id]);
-    return out;
-  };
-  await client.app.log({
-    body: {
-      service: "cline-free",
-      level: "info",
-      message: `Loaded ${free.length} Cline models (${source})`,
-      extra: { models: free.map((m) => m.id) }
-    }
+  const seeded = allCandidates(pool).length;
+  if (seeded > 0) log("info", `cline-free: ${pool.accounts.length} stored account(s) + env merged \u2192 ${seeded} rotation candidate(s)`);
+  const loaded = await loadFreeModels(log);
+  const models = { entries: loaded.entries, meta: loaded.meta };
+  log("info", `cline-free: loaded ${models.entries.length} Cline models (${loaded.source})`);
+  await ctx.provider.transform((editor) => {
+    editor.add(providerInput(models.entries, models.meta));
+  });
+  void loaded.refreshed.then(async (latest) => {
+    if (!latest || disposed) return;
+    models.entries = latest.entries;
+    models.meta = latest.meta;
+    await ctx.provider.reload();
   }).catch(() => {
   });
-  const seeded = allCandidates(pool).length;
-  if (seeded > 0) {
-    log("info", `cline-free: ${pool.accounts.length} stored account(s) + env merged \u2192 ${seeded} rotation candidate(s)`, {
-      accounts: pool.accounts.map((a) => ({ id: a.id, label: a.label, source: a.source }))
+  await ctx.integration.transform((editor) => {
+    editor.update(PROVIDER_ID, (integration) => {
+      integration.name = "Cline Free";
     });
-  }
-  return {
-    config: async (config) => {
-      const latest = await Promise.race([refreshed, sleep(1500).then(() => void 0)]) ?? { entries: free, meta };
-      const models = buildModels(latest.entries, latest.meta);
-      config.provider ??= {};
-      const existing = config.provider[PROVIDER_ID] ?? {};
-      const existingModels = existing.models ?? {};
-      config.provider[PROVIDER_ID] = {
-        name: "Cline Free",
-        npm: "@ai-sdk/openai-compatible",
-        ...existing,
-        options: {
-          ...existing.options ?? {},
-          baseURL: existing.options?.baseURL ?? CHAT_BASE_URL,
-          headers: {
-            Accept: "application/json",
-            // Cline surface headers (mirrors official clients — see
-            // cline/cline#13593). The gateway serves the native free
-            // models only to requests carrying this identity; without
-            // them it answers 403 "only available via Cline product
-            // surfaces". Verified 2026-09-21 against the live API.
-            "HTTP-Referer": "https://cline.bot",
-            "X-Title": "Cline",
-            "User-Agent": "Cline/4.1.16",
-            "X-CLIENT-TYPE": "VSCode Extension",
-            "X-CLIENT-VERSION": "4.1.16",
-            "X-CORE-VERSION": "4.1.16",
-            "X-PLATFORM": "vscode",
-            "X-PLATFORM-VERSION": "4.1.16",
-            "X-IS-MULTIROOT": "false",
-            ...existing.options?.headers ?? {}
-          }
-        },
-        // User-declared models win; we only add missing free ids.
-        models: { ...models, ...existingModels }
-      };
-    },
-    auth: {
-      provider: PROVIDER_ID,
-      loader: async (getAuth, provider) => {
-        const baseHeaders = { "X-CLIENT-TYPE": "opencode" };
-        tidyPool(pool);
-        const auth = await getAuth().catch(() => void 0);
-        mergeNativeAuth(pool, auth);
-        const token = await resolveActiveToken(pool, log, {
-          // Keep the native single-auth entry fresh only when it belongs to
-          // the same Cline user we just refreshed (identity, not token
-          // equality — the token just rotated).
-          onRefreshed: async (picked) => {
-            const t = tokenOf(picked);
-            if (auth?.type === "oauth" && typeof auth.access === "string" && t && sameAccount(auth.access, t)) {
-              await provider?.update?.({
-                access: stripWorkOSPrefix(t),
-                refresh: picked.refresh,
-                expires: picked.expires
-              }).catch(() => {
-              });
-            }
-          }
-        });
-        if (!token) return {};
-        return { apiKey: withWorkOSPrefix(token), baseURL: CHAT_BASE_URL, headers: baseHeaders, fetch: routedFetch };
+    editor.method.update({
+      integrationID: PROVIDER_ID,
+      method: { id: DEVICE_METHOD, type: "oauth", label: "Cline account (free models, recommended)" },
+      authorize: async () => {
+        const device = await startDeviceAuth();
+        const callback = (async () => {
+          const workos = await pollDeviceAuth(device.deviceCode, device.expiresInSeconds, device.intervalSeconds);
+          const creds = await registerWorkOSTokens(workos);
+          const email = await fetchUserEmail(creds.access);
+          const acc = upsertOAuthAccount(pool, creds, email, "oauth");
+          if (email) acc.label = email;
+          void savePoolFile(pool).catch(() => {
+          });
+          log("info", `cline-free: added account ${acc.label ?? acc.id} (${pool.accounts.length} total)`);
+          return oauthCredential(DEVICE_METHOD, creds, email);
+        })();
+        callback.catch((e) => log("warn", `cline-free: device authorization failed: ${e instanceof Error ? e.message : String(e)}`));
+        return {
+          url: device.verificationUriComplete ?? device.verificationUri,
+          instructions: `Open the URL (code ${device.userCode} is pre-filled). Already logged into Cline in this browser? Just click Confirm/Approve \u2014 no password needed. Otherwise log in with Google/GitHub/Microsoft, then approve. Then wait \u2014 OpenCode completes login automatically.`,
+          expiresAt: Date.now() + device.expiresInSeconds * 1e3,
+          mode: "auto",
+          callback
+        };
       },
-      methods: [
-        {
-          type: "oauth",
-          label: "Cline account (free models, recommended)",
-          async authorize() {
-            const device = await startDeviceAuth();
-            return {
-              url: device.verificationUriComplete ?? device.verificationUri,
-              instructions: `Open the URL (code ${device.userCode} is pre-filled). Already logged into Cline in this browser? Just click Confirm/Approve \u2014 no password needed. Otherwise log in with Google/GitHub/Microsoft, then approve. Then wait \u2014 OpenCode completes login automatically.`,
-              method: "auto",
-              callback: async () => {
-                try {
-                  const workos = await pollDeviceAuth(
-                    device.deviceCode,
-                    device.expiresInSeconds,
-                    device.intervalSeconds
-                  );
-                  const creds = await registerWorkOSTokens(workos);
-                  const email = await fetchUserEmail(creds.access);
-                  const acc = upsertOAuthAccount(pool, creds, email, "oauth");
-                  if (email) acc.label = email;
-                  void savePoolFile(pool).catch(() => {
-                  });
-                  log("info", `cline-free: added account ${acc.label ?? acc.id} (${pool.accounts.length} total)`, { accountId: acc.id });
-                  return { type: "success", ...creds };
-                } catch (e) {
-                  log("warn", `cline-free: device authorization failed: ${e instanceof Error ? e.message : String(e)}`);
-                  return { type: "failed" };
-                }
-              }
-            };
-          }
-        },
-        {
-          type: "oauth",
-          label: "Reuse Cline CLI login (this machine, 1 confirm)",
-          async authorize() {
-            const session = await readClineCliSession();
-            if (!session) {
-              throw new Error(
-                "No Cline CLI login found on this machine (~/.cline/data/settings/providers.json). Run `cline auth` first, or pick another method."
-              );
-            }
-            const who = session.email ? ` for ${session.email}` : "";
-            return {
-              url: "https://app.cline.bot/dashboard",
-              instructions: `Found an existing Cline CLI login${who}. Confirm to connect it to OpenCode \u2014 no browser code needed.`,
-              method: "auto",
-              callback: async () => {
-                try {
-                  let { access, refresh, expires } = session;
-                  if (!await validateClineToken(access) && refresh) {
-                    try {
-                      const next = await refreshClineToken(refresh, { label: session.email ?? "cli-import", log });
-                      access = next.access;
-                      refresh = next.refresh;
-                      expires = next.expires;
-                    } catch (e) {
-                      log("warn", `cline-free: CLI-imported token refresh failed: ${e instanceof Error ? e.message : String(e)}`);
-                      return { type: "failed" };
-                    }
-                    if (!await validateClineToken(access)) {
-                      return { type: "failed" };
-                    }
-                  } else if (!await validateClineToken(access)) {
-                    return { type: "failed" };
-                  }
-                  const acc = upsertOAuthAccount(pool, { access, refresh, expires }, session.email, "cli");
-                  if (session.email) acc.label = session.email;
-                  void savePoolFile(pool).catch(() => {
-                  });
-                  log("info", `cline-free: added CLI-imported account ${acc.label ?? acc.id} (${pool.accounts.length} total)`, { accountId: acc.id });
-                  return { type: "success", access, refresh, expires };
-                } catch {
-                  return { type: "failed" };
-                }
-              }
-            };
-          }
-        },
-        {
-          type: "api",
-          label: "Cline token (manual)",
-          prompts: [
-            {
-              type: "text",
-              key: "key",
-              message: "Paste your Cline token (workos:... or raw access token):",
-              placeholder: "workos:..."
-            }
-          ],
-          async authorize(inputs) {
-            const key = inputs?.key?.trim();
-            if (!key) return { type: "failed" };
-            try {
-              const res = await fetchWithTimeout(`${API_BASE}/api/v1/users/me`, {
-                headers: { Authorization: `Bearer ${withWorkOSPrefix(key)}`, Accept: "application/json" }
-              });
-              if (!res.ok) return { type: "failed" };
-            } catch {
-              return { type: "failed" };
-            }
-            const email = await fetchUserEmail(key);
-            const acc = upsertApiAccount(pool, key, email);
-            if (email) acc.label = email;
-            void savePoolFile(pool).catch(() => {
-            });
-            log("info", `cline-free: added manual token ${acc.label ?? acc.id} (${pool.accounts.length} total)`, { accountId: acc.id });
-            return { type: "success", key };
-          }
+      refresh: async (credential) => {
+        const creds = await refreshViaPool(pool, credential, log);
+        return oauthCredential(credential.methodID, creds, payloadEmail(creds.access));
+      },
+      label: (credential) => payloadEmail(credential.access)
+    });
+    editor.method.update({
+      integrationID: PROVIDER_ID,
+      method: { id: CLI_METHOD, type: "oauth", label: "Reuse Cline CLI login (this machine, 1 confirm)" },
+      authorize: async () => {
+        const session = await readClineCliSession();
+        if (!session) {
+          throw new Error(
+            "No Cline CLI login found on this machine (~/.cline/data/settings/providers.json). Run `cline auth` first, or pick another method."
+          );
         }
-      ]
+        const callback = (async () => {
+          let { access, refresh, expires } = session;
+          if (!await validateClineToken(access)) {
+            if (!refresh) throw new Error("Cline CLI session expired and has no refresh token. Run `cline auth` again.");
+            const next = await refreshClineToken(refresh, { label: session.email ?? "cli-import", log });
+            access = next.access;
+            refresh = next.refresh;
+            expires = next.expires;
+            if (!await validateClineToken(access)) throw new Error("Cline rejected the refreshed CLI session.");
+          }
+          const acc = upsertOAuthAccount(pool, { access, refresh, expires }, session.email, "cli");
+          if (session.email) acc.label = session.email;
+          void savePoolFile(pool).catch(() => {
+          });
+          log("info", `cline-free: added CLI-imported account ${acc.label ?? acc.id} (${pool.accounts.length} total)`);
+          return oauthCredential(CLI_METHOD, { access, refresh, expires }, session.email);
+        })();
+        callback.catch((e) => log("warn", `cline-free: CLI login import failed: ${e instanceof Error ? e.message : String(e)}`));
+        const who = session.email ? ` for ${session.email}` : "";
+        return {
+          url: "https://app.cline.bot/dashboard",
+          instructions: `Found an existing Cline CLI login${who}. Connecting it to OpenCode \u2014 no browser code needed.`,
+          mode: "auto",
+          callback
+        };
+      },
+      refresh: async (credential) => {
+        const creds = await refreshViaPool(pool, credential, log);
+        return oauthCredential(credential.methodID, creds, payloadEmail(creds.access));
+      },
+      label: (credential) => payloadEmail(credential.access)
+    });
+    editor.method.update({ integrationID: PROVIDER_ID, method: { type: "key", label: "Cline token (manual)" } });
+  });
+  await ctx.session.hook(
+    "http.request",
+    async (event) => {
+      tidyPool(pool);
+      const connection = await ctx.integration.connection.active(PROVIDER_ID).catch(() => void 0);
+      if (connection) {
+        const credential = await ctx.integration.connection.resolve(connection).catch(() => void 0);
+        mergeConnectionCredential(pool, credential);
+      }
+      const token = await resolveActiveToken(pool, log);
+      if (token) event.request.headers.set("authorization", `Bearer ${withWorkOSPrefix(token)}`);
     },
-    tool: {
-      cline_free_status: tool({
-        description: TOOL_DESCRIPTIONS.status,
-        args: {},
-        async execute() {
-          return poolStatusText(pool);
-        }
-      }),
-      cline_free_remove: tool({
-        description: TOOL_DESCRIPTIONS.remove,
-        args: {
-          id: tool.schema.string().describe("Account id (acc_...) from cline_free_status")
+    { providerID: PROVIDER_ID }
+  );
+  await ctx.session.hook(
+    "http.response",
+    async (event) => {
+      event.response = await recoverResponse(pool, log, event.request, event.response);
+    },
+    { providerID: PROVIDER_ID }
+  );
+  await ctx.tool.transform((editor) => {
+    editor.add({
+      name: "cline_free_status",
+      description: TOOL_DESCRIPTIONS.status,
+      input: objectSchema({}, []),
+      execute: async () => ({ content: poolStatusText(pool) })
+    });
+    editor.add({
+      name: "cline_free_remove",
+      description: TOOL_DESCRIPTIONS.remove,
+      input: objectSchema({ id: { type: "string", description: "Account id (acc_...) from cline_free_status" } }, ["id"]),
+      execute: async (input) => ({ content: await removeAccount(pool, text(input, "id") ?? "", log) })
+    });
+    editor.add({
+      name: "cline_free_add_token",
+      description: TOOL_DESCRIPTIONS.addToken,
+      input: objectSchema(
+        {
+          token: { type: "string", description: "Cline token (workos:... or raw access token)" },
+          label: { type: "string", description: "Friendly label (defaults to account email)" }
         },
-        async execute(args) {
-          return removeAccount(pool, args.id, log);
-        }
-      }),
-      cline_free_add_token: tool({
-        description: TOOL_DESCRIPTIONS.addToken,
-        args: {
-          token: tool.schema.string().describe("Cline token (workos:... or raw access token)"),
-          label: tool.schema.string().optional().describe("Friendly label (defaults to account email)")
-        },
-        async execute(args) {
-          return addToken(pool, args.token, args.label, log);
-        }
-      })
-    }
+        ["token"]
+      ),
+      execute: async (input) => ({ content: await addToken(pool, text(input, "token"), text(input, "label"), log) })
+    });
+  });
+  return () => {
+    disposed = true;
   };
 };
 
@@ -1877,10 +1914,8 @@ var __clineFreeTest = {
   loadPoolFile,
   savePoolFile
 };
-var index_default = {
-  id: "cline-free",
-  server: ClineFreePlugin
-};
+var plugin = { id: "cline-free", setup };
+var index_default = plugin;
 export {
   __clineFreeTest,
   index_default as default

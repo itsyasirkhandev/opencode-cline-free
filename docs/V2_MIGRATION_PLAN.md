@@ -1,5 +1,7 @@
 # OpenCode V2 support plan
 
+> **Update (0.7.0):** shipped as **V2-only** — the V1 adapter was dropped instead of keeping a dual-runtime export. OpenCode 1.x users stay on 0.6.3. Phases 2–5 below are done; the dual-export notes are kept for history.
+
 > Goal: one package and one default export that runs on OpenCode V1 (>= 1.18.29) **and** V2.
 > V1 calls `server()`, V2 calls `setup()`. Each side uses its own API; nothing is translated automatically.
 > Sources: [V2 plugin migration guide](https://opencode.ai/v2/docs/build/plugins/migrate-v1),
@@ -10,10 +12,10 @@
 | Phase | Scope | Status | Release |
 | --- | --- | --- | --- |
 | 1 | Split core / V1 adapter, no behaviour change | Done (PR #4) | 0.6.3 |
-| 2 | Minimal V2: provider + models + one account | Later | — |
-| 3 | V2 multi-account rotation + 429/401 failover | Later | — |
-| 4 | V2 login methods (integration) | Later | — |
-| 5 | V2 tools, cleanup, CI matrix, docs, release | Later | 0.7.0 |
+| 2 | Minimal V2: provider + models + one account | Done | 0.7.0 |
+| 3 | V2 multi-account rotation + 429/401 failover | Done | 0.7.0 |
+| 4 | V2 login methods (integration) | Done | 0.7.0 |
+| 5 | V2 tools, cleanup, docs, release (V1 dropped, so no CI matrix) | Done | 0.7.0 |
 
 ## Phase 1 — done
 

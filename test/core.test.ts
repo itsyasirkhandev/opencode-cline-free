@@ -20,9 +20,10 @@ beforeEach(() => {
 
 const emptyPool = (): PoolFile => ({ version: 1, accounts: [] })
 
-test("entrypoint keeps the V1 object shape", () => {
+test("entrypoint is a V2 plugin definition", () => {
   assert.equal(plugin.id, "cline-free")
-  assert.equal(typeof plugin.server, "function")
+  assert.equal(typeof plugin.setup, "function")
+  assert.equal("server" in plugin, false)
 })
 
 test("resolveActiveToken returns undefined for an empty pool", async () => {

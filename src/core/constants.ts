@@ -18,3 +18,21 @@ export const REFRESH_BUFFER_MS = 5 * 60 * 1000
 // different account when Cline answers 429.
 export const ACCOUNTS_FILE_NAME = "cline-free-accounts.json"
 export const DAY_MS = 24 * 60 * 60 * 1000
+
+// Cline surface headers (mirrors official clients — see cline/cline#13593).
+// The gateway serves the native free models only to requests carrying this
+// identity; without them it answers 403 "only available via Cline product
+// surfaces". Verified 2026-09-21 against the live API. X-CLIENT-TYPE is the
+// value the V1 auth loader layered on top of the config headers.
+export const CLINE_HEADERS: Record<string, string> = {
+  Accept: "application/json",
+  "HTTP-Referer": "https://cline.bot",
+  "X-Title": "Cline",
+  "User-Agent": "Cline/4.1.16",
+  "X-CLIENT-TYPE": "opencode",
+  "X-CLIENT-VERSION": "4.1.16",
+  "X-CORE-VERSION": "4.1.16",
+  "X-PLATFORM": "vscode",
+  "X-PLATFORM-VERSION": "4.1.16",
+  "X-IS-MULTIROOT": "false",
+}

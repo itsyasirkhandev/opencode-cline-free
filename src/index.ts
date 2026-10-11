@@ -1,7 +1,7 @@
 /**
  * opencode-cline-free
  *
- * Exposes Cline's rotating free models inside OpenCode through your
+ * Exposes Cline's rotating free models inside OpenCode V2 through your
  * Cline account (same account/quota you see in Cline VSCode/CLI).
  *
  * Live list: GET https://api.cline.bot/api/v1/ai/cline/recommended-models
@@ -17,7 +17,8 @@
  * cline-free/gemini-3.8-flash, stealth/union-alpha, cline-free/solar-pro4,
  * poolside/laguna-s-2.1:free, deepseek/deepseek-v4-flash.
  */
-import { ClineFreePlugin } from "./v1.ts"
+import type { Plugin } from "@opencode/plugin"
+import { setup } from "./v2.ts"
 import { classifyHttpFailure, fetchWithTimeout, parseOAuthErrorCode, TerminalAuthError, TransientAuthError, withTransientRetries, withWorkOSPrefix } from "./core/http.ts"
 import { refreshClineToken, refreshClineTokenOnce } from "./core/auth.ts"
 import { dedupePool, loadPoolFile, quarantineAccount, refreshAccount, savePoolFile } from "./core/pool.ts"
@@ -41,7 +42,7 @@ export const __clineFreeTest = {
   savePoolFile,
 }
 
-export default {
-  id: "cline-free",
-  server: ClineFreePlugin,
-}
+// Written by hand instead of `Plugin.define(...)` (an identity function) so
+// the bundle needs no runtime import of @opencode/plugin.
+const plugin: Plugin.Plugin = { id: "cline-free", setup }
+export default plugin
