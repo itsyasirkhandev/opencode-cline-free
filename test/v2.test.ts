@@ -190,9 +190,10 @@ test("setup registers the provider, login methods, scoped HTTP hooks and tools",
   assert.equal(hooks.get("http.response")?.providerID, "cline-free")
 
   // http.request stamps the pool-chosen account.
-  const event = { request: new Request(CHAT, { method: "POST", body: "{}" }) }
+  const event = { sessionID: "ses_test", request: new Request(CHAT, { method: "POST", body: "{}" }) }
   await hooks.get("http.request")!.callback(event)
   assert.match(event.request.headers.get("authorization") ?? "", /^Bearer sk_test_[01]$/)
+  assert.equal(event.request.headers.get("x-task-id"), "ses_test")
 
   // The status tool reads the same pool.
   const status = await tools[0].execute({}, {})

@@ -13,12 +13,12 @@ var CLINE_HEADERS = {
   Accept: "application/json",
   "HTTP-Referer": "https://cline.bot",
   "X-Title": "Cline",
-  "User-Agent": "Cline/4.1.16",
+  "User-Agent": "Cline/4.1.23",
   "X-CLIENT-TYPE": "VSCode Extension",
-  "X-CLIENT-VERSION": "4.1.16",
-  "X-CORE-VERSION": "4.1.16",
-  "X-PLATFORM": "vscode",
-  "X-PLATFORM-VERSION": "4.1.16",
+  "X-CLIENT-VERSION": "4.1.23",
+  "X-CORE-VERSION": "0.0.92",
+  "X-PLATFORM": "Visual Studio Code",
+  "X-PLATFORM-VERSION": "1.141.0",
   "X-IS-MULTIROOT": "false"
 };
 
@@ -1856,6 +1856,7 @@ var setup = async (ctx) => {
       }
       const token = await resolveActiveToken(pool, log);
       if (token) event.request.headers.set("authorization", `Bearer ${withWorkOSPrefix(token)}`);
+      event.request.headers.set("X-Task-ID", event.sessionID);
     },
     { providerID: PROVIDER_ID }
   );

@@ -230,6 +230,7 @@ export const setup: Plugin.Plugin["setup"] = async (ctx) => {
       }
       const token = await resolveActiveToken(pool, log)
       if (token) event.request.headers.set("authorization", `Bearer ${withWorkOSPrefix(token)}`)
+      event.request.headers.set("X-Task-ID", event.sessionID)
     },
     { providerID: PROVIDER_ID },
   )
