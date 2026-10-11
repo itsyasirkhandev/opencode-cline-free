@@ -6,7 +6,9 @@ import { join } from "node:path"
 
 import { FALLBACK_FREE, EXTRA_MODELS, MODELS, displayName, isPaidModel, modelConfig } from "../src/core/models.ts"
 import { classifyHttpFailure, TerminalAuthError, TransientAuthError } from "../src/core/http.ts"
-import { selectAccount, withFileLock, type PoolFile, type Logger } from "../src/core/pool.ts"
+import { markAccountLimited, markNoCredits, selectAccount, withFileLock, type PoolFile, type Logger } from "../src/core/pool.ts"
+import { resolveActiveToken } from "../src/core/account.ts"
+import { poolStatusText } from "../src/core/tools.ts"
 import { createRoutedFetch } from "../src/core/router.ts"
 import { loadFreeModels, matchMetadata, readModelsCache, writeModelsCache } from "../src/core/modelList.ts"
 
@@ -168,6 +170,26 @@ test("non-Cline URLs pass straight through", async () => {
   }) as typeof fetch)
   await routed("https://example.com/other", { method: "GET" })
   assert.equal(calls, 1)
+})
+
+test("an account capped on one model still serves the other models", () => {
+  const pool = poolOf(1)
+  markAccountLimited(pool, "a0", 3600_000, log, undefined, "cline-free/mimo-v2.6-flash")
+  assert.equal(selectAccount(pool, Date.now(), "cline-free/mimo-v2.6-flash"), undefined)
+  assert.equal(selectAccount(pool, Date.now(), "cline-free/muse-spark-1.3-contributor")?.id, "a0")
+  // An account-wide cooldown (model unknown) still blocks every model.
+  markAccountLimited(pool, "a0", 7200_000, log)
+  assert.equal(selectAccount(pool, Date.now(), "cline-free/muse-spark-1.3-contributor"), undefined)
+})
+
+test("first pick skips out-of-credit accounts for paid models only, and status shows it", async () => {
+  const pool = poolOf(2)
+  markNoCredits(pool, "a0", log)
+  for (let i = 0; i < 3; i++) assert.equal(await resolveActiveToken(pool, log, { model: "z-ai/glm-5.3-flash" }), "sk_test_1")
+  const free = new Set([0, 1].map(() => resolveActiveToken(pool, log, { model: "cline-free/mimo-v2.6-flash" })))
+  assert.deepEqual(new Set(await Promise.all(free)), new Set(["sk_test_0", "sk_test_1"]))
+  assert.match(poolStatusText(pool), /acct0 \[a0\] \(.*NO-CREDITS/)
+  assert.doesNotMatch(poolStatusText(pool), /acct1 \[a1\] \(.*NO-CREDITS/)
 })
 
 // --- model cache ---

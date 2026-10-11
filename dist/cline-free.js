@@ -1073,13 +1073,19 @@ function markNoCredits(pool, id, log2, detail) {
     { accountId: id }
   );
 }
+function accountWideLimited(a, now, model) {
+  if (!a.limitedUntil || a.limitedUntil <= now) return false;
+  if (!model || !a.modelLimits) return true;
+  const until = a.limitedUntil;
+  return !Object.values(a.modelLimits).some((u) => u >= until);
+}
 function selectAccount(pool, now = Date.now(), model) {
   const candidates = allCandidates(pool);
   const healthy = candidates.filter((a) => {
-    if (a.limitedUntil && a.limitedUntil > now) return false;
     if (isPaidModel(model) && hasNoCredits(pool, a.id)) return false;
     const until = modelLimitUntil(a, model);
-    return !until || until <= now;
+    if (until && until > now) return false;
+    return !accountWideLimited(a, now, model);
   });
   if (healthy.length === 0) return void 0;
   const key = model ?? "";
@@ -1277,10 +1283,10 @@ function mergeNativeAuth(pool, auth) {
   }
 }
 async function resolveActiveToken(pool, log2, opts = {}) {
-  let picked = selectAccount(pool, Date.now());
+  let picked = selectAccount(pool, Date.now(), opts.model);
   if (!picked && pool.accounts.some((a) => a.authFailedAt)) {
     await probeQuarantinedAccounts(pool, log2);
-    picked = selectAccount(pool, Date.now());
+    picked = selectAccount(pool, Date.now(), opts.model);
   }
   if (!picked) {
     const candidates = allCandidates(pool);
@@ -1292,7 +1298,7 @@ async function resolveActiveToken(pool, log2, opts = {}) {
     return t;
   }
   const useFallback = (exceptId) => {
-    const fb = selectAccount(pool, Date.now());
+    const fb = selectAccount(pool, Date.now(), opts.model);
     const ft = fb ? tokenOf(fb) : void 0;
     if (fb && ft && fb.id !== exceptId) {
       pool.activeId = fb.id;
@@ -1369,7 +1375,7 @@ function tidyPool(pool) {
 
 // src/core/tools.ts
 var TOOL_DESCRIPTIONS = {
-  status: "Show Cline Free account pool status: stored accounts, env accounts, which is active, and 429 cooldowns.",
+  status: "Show Cline Free account pool status: stored accounts, env accounts, which is active, 429 cooldowns, and accounts out of Cline credits.",
   remove: "Remove a stored Cline Free account from the rotation pool by id (see cline_free_status). Env accounts cannot be removed here \u2014 unset the env var instead.",
   addToken: "Validate and add a Cline token (workos:... or raw) to the rotation pool."
 };
@@ -1388,6 +1394,7 @@ function poolStatusText(pool) {
       a.id === pool.activeId ? "active" : "",
       modelCd || anyLimited ? "COOLDOWN" : "",
       modelCd,
+      hasNoCredits(pool, a.id) ? "NO-CREDITS (paid models skipped until restart)" : "",
       quarantined ? `NEEDS-RELOGIN${a.authFailedReason ? ` (${a.authFailedReason.slice(0, 80)})` : ""}` : "",
       a.source
     ].filter(Boolean).join(" | ");
@@ -1948,7 +1955,9 @@ var setup = async (ctx) => {
         const credential = await ctx.integration.connection.resolve(connection).catch(() => void 0);
         mergeConnectionCredential(pool, credential);
       }
-      const token = await resolveActiveToken(pool, log);
+      const body = await Promise.resolve().then(() => event.request.clone().arrayBuffer()).catch(() => null);
+      const model = modelOfRequest(event.request.url, body);
+      const token = await resolveActiveToken(pool, log, { model });
       if (token) event.request.headers.set("authorization", `Bearer ${withWorkOSPrefix(token)}`);
       event.request.headers.set("X-Task-ID", event.sessionID);
     },

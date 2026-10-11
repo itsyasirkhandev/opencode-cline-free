@@ -722,6 +722,17 @@ export function markNoCredits(pool: PoolFile, id: string, log: Logger, detail?: 
   )
 }
 
+/** True when the account is cooling down for every model. `limitedUntil`
+ * also mirrors the longest per-model cooldown (for status displays), so when
+ * the model is known it only blocks if no model limit explains it — an
+ * account capped on one model still serves the others. */
+function accountWideLimited(a: PoolAccount, now: number, model: string | undefined) {
+  if (!a.limitedUntil || a.limitedUntil <= now) return false
+  if (!model || !a.modelLimits) return true
+  const until = a.limitedUntil
+  return !Object.values(a.modelLimits).some((u) => u >= until)
+}
+
 /** Next healthy account in round-robin order; undefined when all limited.
  * An account is healthy only when its account-wide cooldown AND its cooldown
  * for the requested model (if any) have both expired. */
@@ -730,10 +741,10 @@ export function selectAccount(pool: PoolFile, now = Date.now(), model?: string):
   // Start scanning at the cursor, keyed on the full candidate order so
   // parallel requests spread across accounts.
   const healthy = candidates.filter((a) => {
-    if (a.limitedUntil && a.limitedUntil > now) return false
     if (isPaidModel(model) && hasNoCredits(pool, a.id)) return false
     const until = modelLimitUntil(a, model)
-    return !until || until <= now
+    if (until && until > now) return false
+    return !accountWideLimited(a, now, model)
   })
   if (healthy.length === 0) return undefined
   const key = model ?? ""

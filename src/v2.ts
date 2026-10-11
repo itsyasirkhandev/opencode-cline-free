@@ -4,7 +4,7 @@ import { CHAT_BASE_URL, CLINE_HEADERS, PROVIDER_ID } from "./core/constants.ts"
 import { withWorkOSPrefix } from "./core/http.ts"
 import { loadFreeModels } from "./core/modelList.ts"
 import { type AutoMeta, type FreeEntry, modelConfig } from "./core/models.ts"
-import { type Logger, allCandidates, dedupePool, fetchUserEmail, loadPoolFile, payloadEmail, pruneLimits, savePoolFile, upsertOAuthAccount } from "./core/pool.ts"
+import { type Logger, allCandidates, dedupePool, fetchUserEmail, loadPoolFile, modelOfRequest, payloadEmail, pruneLimits, savePoolFile, upsertOAuthAccount } from "./core/pool.ts"
 import { type ConnectionCredential, mergeConnectionCredential, refreshViaPool, resolveActiveToken, tidyPool } from "./core/account.ts"
 import { TOOL_DESCRIPTIONS, addToken, poolStatusText, removeAccount } from "./core/tools.ts"
 import { recoverResponse } from "./core/router.ts"
@@ -237,7 +237,12 @@ export const setup: Plugin.Plugin["setup"] = async (ctx) => {
         const credential = await ctx.integration.connection.resolve(connection).catch(() => undefined)
         mergeConnectionCredential(pool, credential as ConnectionCredential)
       }
-      const token = await resolveActiveToken(pool, log)
+      // Model of the request so the pick skips accounts capped on it.
+      const body = await Promise.resolve()
+        .then(() => event.request.clone().arrayBuffer())
+        .catch(() => null)
+      const model = modelOfRequest(event.request.url, body)
+      const token = await resolveActiveToken(pool, log, { model })
       if (token) event.request.headers.set("authorization", `Bearer ${withWorkOSPrefix(token)}`)
       event.request.headers.set("X-Task-ID", event.sessionID)
     },

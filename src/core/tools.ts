@@ -8,6 +8,7 @@ import {
   allCandidates,
   dedupePool,
   fetchUserEmail,
+  hasNoCredits,
   maskToken,
   poolFilePath,
   pruneLimits,
@@ -17,7 +18,7 @@ import {
 } from "./pool.ts"
 
 export const TOOL_DESCRIPTIONS = {
-  status: "Show Cline Free account pool status: stored accounts, env accounts, which is active, and 429 cooldowns.",
+  status: "Show Cline Free account pool status: stored accounts, env accounts, which is active, 429 cooldowns, and accounts out of Cline credits.",
   remove:
     "Remove a stored Cline Free account from the rotation pool by id (see cline_free_status). Env accounts cannot be removed here — unset the env var instead.",
   addToken: "Validate and add a Cline token (workos:... or raw) to the rotation pool.",
@@ -45,6 +46,7 @@ export function poolStatusText(pool: PoolFile): string {
       a.id === pool.activeId ? "active" : "",
       modelCd || anyLimited ? "COOLDOWN" : "",
       modelCd,
+      hasNoCredits(pool, a.id) ? "NO-CREDITS (paid models skipped until restart)" : "",
       quarantined ? `NEEDS-RELOGIN${a.authFailedReason ? ` (${a.authFailedReason.slice(0, 80)})` : ""}` : "",
       a.source,
     ]

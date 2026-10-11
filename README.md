@@ -1,6 +1,6 @@
 # opencode-cline-free
 
-**v0.8.0** · Use Cline's rotating **free models** inside OpenCode V2 with your Cline account —
+**v0.8.1** · Use Cline's rotating **free models** inside OpenCode V2 with your Cline account —
 same quota you see tagged `FREE` in Cline VSCode/CLI.
 
 > **Requires OpenCode V2 (2.x).** OpenCode 1.x users: stay on 0.6.3, the
@@ -128,10 +128,12 @@ Free quota is per Cline account and resets daily. The plugin keeps a pool
 (`~/.local/share/opencode/cline-free-accounts.json`, override with
 `CLINE_FREE_ACCOUNTS_FILE`) and rotates across it:
 
-- **Loader** picks the next healthy account round-robin per request
-  (limited accounts are skipped).
+- **Loader** picks the next healthy account round-robin per request, for
+  the request's model: accounts capped on that model are skipped, and for
+  paid models so are accounts out of Cline credits.
 - **Per-model cooldowns**: Cline's free caps are per user **and** model, so an
-  account exhausted on deepseek still has muse quota (and vice versa).
+  account exhausted on deepseek still has muse quota (and vice versa) and
+  stays available as a fallback for the other models.
   `429` bodies like `Try again in 1h 37m` are parsed to match the server.
 - **Fetch router**: if Cline answers `429` on a chat request, that account
   is parked until it recovers (`Retry-After` when the server sends one,
@@ -162,7 +164,7 @@ Add accounts three ways (they merge, deduped by stable Cline user identity
    (same with `CLINE_FREE_` prefix). Env accounts are ephemeral —
    unset the var to drop them.
 3. Agent tools: `cline_free_status` (list accounts, active marker,
-   cooldowns), `cline_free_add_token` (validate + add a token),
+   cooldowns, `NO-CREDITS` for accounts skipped on paid models), `cline_free_add_token` (validate + add a token),
    `cline_free_remove` (drop a stored account by id).
 
 Already logged into Cline in your browser? Method 1 is then a single
@@ -298,6 +300,7 @@ npm publish --access public
 
 | Version | Changes |
 |---|---|
+| **0.8.1** | Account picks are per model: an account capped on one model still serves the others, the first pick for a paid model skips $0-balance accounts, and `cline_free_status` flags them `NO-CREDITS` |
 | **0.8.0** | Paid models now switch accounts on `429` and on `402 Insufficient balance`; a $0-balance account is skipped for paid models until OpenCode restarts (free models unaffected) |
 | **0.7.5** | `openai/gpt-6.1-sol` efforts corrected to low, medium, high, xhigh, max (from OpenAI docs) |
 | **0.7.4** | Register paid `openai/gpt-6.1-sol` (GPT-6.1 Sol, bills Cline credits) with catalog limits/pricing |

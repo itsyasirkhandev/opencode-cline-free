@@ -72,6 +72,9 @@ export type ResolveOptions = {
   /** Called after an account's token was refreshed successfully (V1 uses it
    * to keep the host's stored credential in sync). */
   onRefreshed?: (account: PoolAccount) => Promise<void>
+  /** Model of the request, so the pick skips accounts capped on it (and,
+   * for paid models, accounts out of credits). */
+  model?: string
 }
 
 /** Pick the account to use for the next request and return its raw token
@@ -79,13 +82,13 @@ export type ResolveOptions = {
  * pool (activeId, lastUsed, refreshes, quarantine) exactly like the original
  * V1 loader did. */
 export async function resolveActiveToken(pool: PoolFile, log: Logger, opts: ResolveOptions = {}): Promise<string | undefined> {
-  let picked = selectAccount(pool, Date.now())
+  let picked = selectAccount(pool, Date.now(), opts.model)
   if (!picked && pool.accounts.some((a) => a.authFailedAt)) {
     // No healthy account, but quarantined ones exist: give the recovery
     // probes a chance before reporting exhaustion (lazy, so the hot path
     // never pays probe latency).
     await probeQuarantinedAccounts(pool, log)
-    picked = selectAccount(pool, Date.now())
+    picked = selectAccount(pool, Date.now(), opts.model)
   }
   if (!picked) {
     const candidates = allCandidates(pool)
@@ -105,7 +108,7 @@ export async function resolveActiveToken(pool: PoolFile, log: Logger, opts: Reso
   // Single-flight + persisted: concurrent requests share one refresh, so
   // rotation on the server never sees a replayed refresh token.
   const useFallback = (exceptId: string): string | undefined => {
-    const fb = selectAccount(pool, Date.now())
+    const fb = selectAccount(pool, Date.now(), opts.model)
     const ft = fb ? tokenOf(fb) : undefined
     if (fb && ft && fb.id !== exceptId) {
       pool.activeId = fb.id
