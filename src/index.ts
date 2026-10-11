@@ -12,6 +12,7 @@
  * z-ai/glm-5.3-flash — NOT free. It bills Cline credits (verified 2026-09-24:
  * the account balance drops by `creditsUsed`, unlike the free rotation which
  * records 0).
+ * xiaomi/mimo-v2.6-pro — NOT free, bills Cline credits (added 2026-10-11).
  * Rotated out (kept as known/stale ids where useful): cline-free/deepseek-v4.1-flash,
  * stealth/space-bunny-alpha, stealth/pixel-canary,
  * cline-free/gemini-3.8-flash, stealth/union-alpha, cline-free/solar-pro4,

@@ -1,6 +1,6 @@
 # opencode-cline-free
 
-**v0.7.2** · Use Cline's rotating **free models** inside OpenCode V2 with your Cline account —
+**v0.7.3** · Use Cline's rotating **free models** inside OpenCode V2 with your Cline account —
 same quota you see tagged `FREE` in Cline VSCode/CLI.
 
 > **Requires OpenCode V2 (2.x).** OpenCode 1.x users: stay on 0.6.3, the
@@ -36,9 +36,10 @@ automatically. Offline it falls back to a bundled list.
 | `cline-free/mimo-v2.6-flash` | Cline-only free, MiMo 2.6 (309B MoE) · `none` (reasoning off), `high` (reasoning on) — on/off only |
 | `cline-free/muse-spark-1.3-contributor` | Cline-only free · minimal, low, medium, high, xhigh (`max` fails server-side) |
 
-Registered even though it is **not** in the live `free` array (and **not free**):
+Registered even though they are **not** in the live `free` array (and **not free**):
 
 - `z-ai/glm-5.3-flash` · low, high, max · **bills Cline credits** — the account balance drops by `creditsUsed`, whereas the free rotation records 0
+- `xiaomi/mimo-v2.6-pro` · `none` (reasoning off), `high` (reasoning on) · 1M context, 131K output, text/image/video/audio · **bills Cline credits** ($0.435 / $0.87 per 1M tokens)
 
 Rotated out of the free list (ids kept in the plugin as known/stale where useful):
 
@@ -290,6 +291,7 @@ npm publish --access public
 
 | Version | Changes |
 |---|---|
+| **0.7.3** | Register paid `xiaomi/mimo-v2.6-pro` (MiMo V2.6 Pro, bills Cline credits) with catalog limits/pricing and on/off reasoning |
 | **0.7.2** | Short account labels (email part before `@`, max 12 chars) so "Cline Free" is no longer cut off in OpenCode's Connect dialog when several accounts are logged in |
 | **0.7.1** | One-command install: `opencode plugin add github:itsyasirkhandev/opencode-cline-free` now works (the `build` script, renamed to `bundle`, made npm's git-dep "prepare" step fail with `git dep preparation failed`) |
 | **0.7.0** | Runs on **OpenCode V2** (`@opencode/plugin` 2.x): models, login methods, 429/401 failover and the 3 tools ported to the V2 API. **V1 support dropped** — OpenCode 1.x users stay on 0.6.3. Config key is now `plugins`. Free rotation sync (2026-10-11): `cline-free/step-5-preview` and `cline-free/solar-mini4` added to the offline fallback |

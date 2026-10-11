@@ -120,6 +120,19 @@ export const MODELS: Record<string, ModelSpec> = {
     input: ["text", "image", "video"],
     variants: ["low", "high", "max"],
   },
+  // Added 2026-10-11. Limits/cost/inputs from the catalog entry
+  // `xiaomi/mimo-v2.6-pro` (Cline's billed rates). Like V2.6 Flash, the
+  // catalog lists `reasoning` but not `reasoning_effort` → on/off only.
+  // Not probe-verified (needs a real account with credits).
+  "xiaomi/mimo-v2.6-pro": {
+    name: "MiMo V2.6 Pro",
+    description: "Xiaomi MiMo 2.6 Pro — 1T+ parameter flagship, multimodal — bills Cline credits (not free).",
+    status: "paid",
+    cost: { input: 0.435, output: 0.87, cache_read: 0.0036 },
+    limit: { context: 1_048_576, output: 131_072 },
+    input: ["text", "image", "video", "audio"],
+    variants: ["none", "high"],
+  },
 
   // --- Rotated out (kept so metadata is right if they return) ---
   // Left the free list on 2026-10-06.
