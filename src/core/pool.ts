@@ -1,6 +1,7 @@
 import { refreshClineToken, validateClineToken } from "./auth.ts"
 import { ACCOUNTS_FILE_NAME, API_BASE, REFRESH_BUFFER_MS } from "./constants.ts"
 import { TerminalAuthError, TransientAuthError, fetchWithTimeout, sleep, withWorkOSPrefix } from "./http.ts"
+import { isPaidModel } from "./models.ts"
 
 // --- Multi-account pool + 429 router ---
 //
@@ -700,6 +701,27 @@ export async function probeQuarantinedAccounts(pool: PoolFile, log: Logger): Pro
 // cooldowns on some accounts never skew the spread across the rest.
 const rrCursors = new Map<string, number>()
 
+// Accounts that answered HTTP 402 `insufficient_credits`. Cline's starter
+// credits never refill, so paid models skip these accounts until OpenCode
+// restarts (memory only, never saved). Free models keep using them.
+const noCredits = new WeakMap<PoolFile, Set<string>>()
+
+export function hasNoCredits(pool: PoolFile, id: string) {
+  return noCredits.get(pool)?.has(id) ?? false
+}
+
+export function markNoCredits(pool: PoolFile, id: string, log: Logger, detail?: string) {
+  const ids = noCredits.get(pool) ?? new Set<string>()
+  ids.add(id)
+  noCredits.set(pool, ids)
+  const acc = pool.accounts.find((a) => a.id === id)
+  log(
+    "warn",
+    `cline-free: account ${acc?.label ?? id} is out of Cline credits — skipping it for paid models until OpenCode restarts${detail ? ` (${detail})` : ""}`,
+    { accountId: id },
+  )
+}
+
 /** Next healthy account in round-robin order; undefined when all limited.
  * An account is healthy only when its account-wide cooldown AND its cooldown
  * for the requested model (if any) have both expired. */
@@ -709,6 +731,7 @@ export function selectAccount(pool: PoolFile, now = Date.now(), model?: string):
   // parallel requests spread across accounts.
   const healthy = candidates.filter((a) => {
     if (a.limitedUntil && a.limitedUntil > now) return false
+    if (isPaidModel(model) && hasNoCredits(pool, a.id)) return false
     const until = modelLimitUntil(a, model)
     return !until || until <= now
   })

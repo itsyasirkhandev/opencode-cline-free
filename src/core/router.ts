@@ -1,9 +1,9 @@
 import { REFRESH_BUFFER_MS } from "./constants.ts"
 import { TerminalAuthError, withWorkOSPrefix } from "./http.ts"
 import { isPaidModel } from "./models.ts"
-import { type Logger, type PoolFile, allCandidates, clineUserKey, findByToken, isAuthFailure, isRoutableUrl, markAccountLimited, maskToken, modelLimitUntil, modelOfRequest, parseRetryAfterFromBody, parseRetryAfterMs, pruneLimits, quarantineAccount, refreshAccount, sameAccount, savePoolFile, selectAccount, stripWorkOSPrefix, tokenOf } from "./pool.ts"
+import { type Logger, type PoolFile, allCandidates, clineUserKey, findByToken, hasNoCredits, isAuthFailure, isRoutableUrl, markAccountLimited, markNoCredits, maskToken, modelLimitUntil, modelOfRequest, parseRetryAfterFromBody, parseRetryAfterMs, pruneLimits, quarantineAccount, refreshAccount, sameAccount, savePoolFile, selectAccount, stripWorkOSPrefix, tokenOf } from "./pool.ts"
 
-// --- Transparent same-request 429 + 401 failover ---
+// --- Transparent same-request 429 + 401 + 402 failover ---
 //
 // OpenCode's AI SDK performs the HTTPS call with the apiKey the loader
 // returned. When Cline answers 429 we swap in the next healthy account and
@@ -11,6 +11,8 @@ import { type Logger, type PoolFile, allCandidates, clineUserKey, findByToken, i
 // The same router handles 401/403 auth rejections: it refreshes the dead
 // account once in place and replays, else quarantines it (NEEDS-RELOGIN)
 // and retries the SAME request on the next healthy account.
+// Paid models also fail over on 402 `insufficient_credits` (Cline rejects
+// before billing): the account is skipped for paid models until restart.
 
 /** Build the provider-scoped fetch the auth loader hands to the AI SDK.
  * Only requests made by the cline-free provider pass through it; the rest
@@ -73,8 +75,8 @@ export function createRoutedFetch(
     const incomingToken = incomingAuth.replace(/^bearer\s+/i, "")
     const now = Date.now()
     const reqModel = modelOfRequest(url, body)
-    // Paid models bill Cline credits: never fail over to another account or
-    // replay for diagnostics. Same-account token refresh is still allowed.
+    // Paid models bill Cline credits: they fail over like free models (Cline
+    // rejects 402/429 before billing), but are never replayed for diagnostics.
     const paid = isPaidModel(reqModel)
     pruneLimits(pool, now)
 
@@ -114,13 +116,23 @@ export function createRoutedFetch(
     }
     const cleanDetail = (snippet: string): string | undefined =>
       snippet.replace(/\s+/g, " ").trim().slice(0, 160) || undefined
+    // 402 `insufficient_credits` on a paid model: keep the body for the
+    // caller, park the account for paid models, try the next one.
+    const outOfCredits = (res: Response) => paid && res.status === 402
+    const parkNoCredits = async (res: Response, id: string) => {
+      const detail = cleanDetail(await readSnippet(res))
+      lastRes = keepForReturn(res)
+      await drain(res).catch(() => {})
+      markNoCredits(pool, id, log, detail)
+    }
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      if (paid && tried.size > 0) break
       let token: string
       let accountId: string | undefined
       const firstAcc = first ? pool.accounts.find((a) => a.id === first.accountId) : undefined
-      const firstLimited = firstAcc ? (modelLimitUntil(firstAcc, reqModel) ?? 0) > now : false
+      const firstLimited = firstAcc
+        ? (modelLimitUntil(firstAcc, reqModel) ?? 0) > now || (paid && hasNoCredits(pool, firstAcc.id))
+        : false
       if (attempt === 0 && first && !firstLimited) {
         ;({ token, accountId } = first)
       } else {
@@ -210,6 +222,11 @@ export function createRoutedFetch(
           const h2 = new Headers(headers)
           h2.set("authorization", `Bearer ${withWorkOSPrefix(current)}`)
           const res2 = await origFetch(url, { method, headers: h2, body, signal })
+          if (outOfCredits(res2)) {
+            await drain(res).catch(() => {})
+            await parkNoCredits(res2, acc.id)
+            continue
+          }
           if (res2.status !== 401 && res2.status !== 403 && res2.status !== 429) {
             pool.activeId = acc.id
             acc.lastUsed = Date.now()
@@ -241,6 +258,11 @@ export function createRoutedFetch(
               const h2 = new Headers(headers)
               h2.set("authorization", `Bearer ${withWorkOSPrefix(fresh)}`)
               const res2 = await origFetch(url, { method, headers: h2, body, signal })
+              if (outOfCredits(res2)) {
+                await drain(res).catch(() => {})
+                await parkNoCredits(res2, acc.id)
+                continue
+              }
               if (res2.status !== 401 && res2.status !== 403 && res2.status !== 429) {
                 pool.activeId = acc.id
                 acc.lastUsed = Date.now()
@@ -300,6 +322,11 @@ export function createRoutedFetch(
         continue
       }
 
+      if (outOfCredits(res) && accountId && pool.accounts.some((a) => a.id === accountId)) {
+        await parkNoCredits(res, accountId)
+        continue
+      }
+
       if (res.status !== 429) {
         if (accountId) {
           pool.activeId = accountId
@@ -309,7 +336,7 @@ export function createRoutedFetch(
             void savePoolFile(pool).catch(() => {})
           }
         }
-        if (attempt > 0) log("info", `cline-free: request recovered on ${pool.accounts.find((a) => a.id === accountId)?.label ?? "fallback account"} after 429/re-auth (attempt ${attempt + 1})`)
+        if (attempt > 0) log("info", `cline-free: request recovered on ${pool.accounts.find((a) => a.id === accountId)?.label ?? "fallback account"} after 429/402/re-auth (attempt ${attempt + 1})`)
         return res
       }
 
@@ -336,6 +363,11 @@ export function createRoutedFetch(
       return lastAuthRes
     }
 
+    if (lastRes && paid) {
+      log("error", `cline-free: no account could serve paid model ${reqModel} (all ${tried.size} tried are out of Cline credits or rate limited). Add credits or another Cline account via /connect.`)
+      return lastRes
+    }
+
     if (lastRes) {
       const waiting = pool.accounts
         .filter((a) => a.limitedUntil && a.limitedUntil > Date.now())
@@ -348,7 +380,7 @@ export function createRoutedFetch(
         .filter((a) => tokenOf(a))
         .sort((a, b) => (a.limitedUntil ?? 0) - (b.limitedUntil ?? 0))[0]
       const t = earliest ? tokenOf(earliest) : undefined
-      if (!paid && earliest && t) {
+      if (earliest && t) {
         const h = new Headers(headers)
         h.set("authorization", `Bearer ${withWorkOSPrefix(t)}`)
         try {
@@ -363,9 +395,10 @@ export function createRoutedFetch(
   }) as typeof fetch
 }
 
-/** Statuses the router recovers from (auth refresh / account failover). */
+/** Statuses the router recovers from (auth refresh / account failover).
+ * 402 only fails over for paid models; the router returns it otherwise. */
 export function needsFailover(status: number): boolean {
-  return status === 401 || status === 403 || status === 429
+  return status === 401 || status === 402 || status === 403 || status === 429
 }
 
 /** Recover a response that already came back (V2 `http.response` hook).

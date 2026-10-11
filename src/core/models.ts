@@ -4,8 +4,8 @@
  * One entry per model holds its display name, status, cost, limits, input
  * modalities and accepted reasoning efforts. `status` drives everything else:
  * - "free":  part of the current free rotation; used as the offline fallback
- * - "paid":  always registered, but bills Cline credits (never auto-replayed
- *            on another account)
+ * - "paid":  always registered, but bills Cline credits (fails over on
+ *            429/402 like free models; never replayed for diagnostics)
  * - "stale": rotated out; metadata kept so the model still renders correctly
  *            if Cline brings it back
  *

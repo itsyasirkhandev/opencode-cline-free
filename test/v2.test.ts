@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { mergeConnectionCredential, refreshViaPool } from "../src/core/account.ts"
-import { recoverResponse } from "../src/core/router.ts"
+import { createRoutedFetch, recoverResponse } from "../src/core/router.ts"
 import type { Logger, PoolFile } from "../src/core/pool.ts"
 import { accountLabel, providerInput, setup, toModelInfo } from "../src/v2.ts"
 
@@ -126,7 +126,7 @@ test("recoverResponse replays a 429 on the next account", async () => {
   assert.ok(pool.accounts[0].modelLimits?.["cline-free/mimo-v2.6-flash"])
 })
 
-test("recoverResponse leaves successful and paid-model responses alone", async () => {
+test("recoverResponse leaves successful responses alone", async () => {
   let calls = 0
   const count = (async () => {
     calls++
@@ -134,9 +134,59 @@ test("recoverResponse leaves successful and paid-model responses alone", async (
   }) as typeof fetch
   const ok = new Response("fine", { status: 200 })
   assert.equal(await recoverResponse(apiPool(2), log, chatRequest("sk_test_0"), ok, count), ok)
-  const paid = await recoverResponse(apiPool(3), log, chatRequest("sk_test_0", "z-ai/glm-5.3-flash"), new Response("rate limited", { status: 429 }), count)
-  assert.equal(paid.status, 429)
   assert.equal(calls, 0)
+})
+
+const PAID = "z-ai/glm-5.3-flash"
+const noBalance = () =>
+  new Response(JSON.stringify({ error: { code: "insufficient_credits", message: "Insufficient balance. Your Cline Credits balance is $0.00", details: { current_balance: 0 } } }), { status: 402 })
+const recorder = (seen: string[], reply: (auth: string) => Response = () => new Response("ok", { status: 200 })) =>
+  (async (_u: any, init: any) => {
+    const auth = new Headers(init.headers).get("authorization")!
+    seen.push(auth)
+    return reply(auth)
+  }) as typeof fetch
+
+test("paid model: 429 fails over to the next account", async () => {
+  const seen: string[] = []
+  const res = await recoverResponse(apiPool(2), log, chatRequest("sk_test_0", PAID), new Response("rate limited", { status: 429 }), recorder(seen))
+  assert.equal(res.status, 200)
+  assert.deepEqual(seen, ["Bearer sk_test_1"])
+})
+
+test("paid model: 402 insufficient balance switches account and skips it for paid models only", async () => {
+  const pool = apiPool(2)
+  const seen: string[] = []
+  const res = await recoverResponse(pool, log, chatRequest("sk_test_0", PAID), noBalance(), recorder(seen))
+  assert.equal(res.status, 200)
+  assert.deepEqual(seen, ["Bearer sk_test_1"])
+
+  // Next paid request that still arrives on the $0 account goes straight to the other one.
+  seen.length = 0
+  const again = await createRoutedFetch(pool, log, recorder(seen))(chatRequest("sk_test_0", PAID))
+  assert.equal(again.status, 200)
+  assert.deepEqual(seen, ["Bearer sk_test_1"])
+
+  // Free models keep using the $0 account.
+  seen.length = 0
+  const free = await createRoutedFetch(pool, log, recorder(seen))(chatRequest("sk_test_0"))
+  assert.equal(free.status, 200)
+  assert.deepEqual(seen, ["Bearer sk_test_0"])
+})
+
+test("paid model: all accounts out of credits returns Cline's 402 body", async () => {
+  const seen: string[] = []
+  const res = await recoverResponse(apiPool(2), log, chatRequest("sk_test_0", PAID), noBalance(), recorder(seen, () => noBalance()))
+  assert.equal(res.status, 402)
+  assert.match(await res.text(), /Insufficient balance/)
+  assert.deepEqual(seen, ["Bearer sk_test_1"])
+})
+
+test("free model: 402 is returned untouched (no switch)", async () => {
+  const seen: string[] = []
+  const res = await recoverResponse(apiPool(2), log, chatRequest("sk_test_0"), noBalance(), recorder(seen))
+  assert.equal(res.status, 402)
+  assert.deepEqual(seen, [])
 })
 
 // --- setup against a fake V2 context ---

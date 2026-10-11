@@ -144,7 +144,7 @@ test("free model 429 fails over to the next account", async () => {
   assert.deepEqual(seen, ["Bearer sk_test_0", "Bearer sk_test_1"])
 })
 
-test("paid model is sent exactly once and never replayed on another account", async () => {
+test("paid model tries each account once on 429, with no extra diagnostic replay", async () => {
   const pool = poolOf(3)
   let calls = 0
   const routed = createRoutedFetch(pool, log, (async () => {
@@ -157,7 +157,7 @@ test("paid model is sent exactly once and never replayed on another account", as
     body: body("z-ai/glm-5.3-flash"),
   })
   assert.equal(res.status, 429)
-  assert.equal(calls, 1)
+  assert.equal(calls, 3)
 })
 
 test("non-Cline URLs pass straight through", async () => {

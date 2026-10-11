@@ -1,6 +1,6 @@
 # opencode-cline-free
 
-**v0.7.5** · Use Cline's rotating **free models** inside OpenCode V2 with your Cline account —
+**v0.8.0** · Use Cline's rotating **free models** inside OpenCode V2 with your Cline account —
 same quota you see tagged `FREE` in Cline VSCode/CLI.
 
 > **Requires OpenCode V2 (2.x).** OpenCode 1.x users: stay on 0.6.3, the
@@ -144,6 +144,12 @@ Free quota is per Cline account and resets daily. The plugin keeps a pool
   account. Stale cached tokens are recovered by JWT user key after rotation.
   Only non-auth `403/5xx` pass through untouched so real permission
   problems and outages stay visible.
+- **Paid models** (`(paid)` in the model list) fail over the same way on
+  `429`, and also on `402 Insufficient balance` (Cline rejects these before
+  billing, so nothing is charged twice). The retry spends the **next
+  account's** credits. An account that answered `402` is skipped for paid
+  models until OpenCode restarts (Cline's starter credits don't refill);
+  free models keep using it.
 - Cooldowns persist in the pool file, so they survive restarts.
 
 Add accounts three ways (they merge, deduped by stable Cline user identity
@@ -292,6 +298,7 @@ npm publish --access public
 
 | Version | Changes |
 |---|---|
+| **0.8.0** | Paid models now switch accounts on `429` and on `402 Insufficient balance`; a $0-balance account is skipped for paid models until OpenCode restarts (free models unaffected) |
 | **0.7.5** | `openai/gpt-6.1-sol` efforts corrected to low, medium, high, xhigh, max (from OpenAI docs) |
 | **0.7.4** | Register paid `openai/gpt-6.1-sol` (GPT-6.1 Sol, bills Cline credits) with catalog limits/pricing |
 | **0.7.3** | Register paid `xiaomi/mimo-v2.6-pro` (MiMo V2.6 Pro, bills Cline credits) with catalog limits/pricing and on/off reasoning |

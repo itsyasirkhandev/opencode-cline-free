@@ -1058,10 +1058,26 @@ async function probeQuarantinedAccounts(pool, log2) {
   });
 }
 var rrCursors = /* @__PURE__ */ new Map();
+var noCredits = /* @__PURE__ */ new WeakMap();
+function hasNoCredits(pool, id) {
+  return noCredits.get(pool)?.has(id) ?? false;
+}
+function markNoCredits(pool, id, log2, detail) {
+  const ids = noCredits.get(pool) ?? /* @__PURE__ */ new Set();
+  ids.add(id);
+  noCredits.set(pool, ids);
+  const acc = pool.accounts.find((a) => a.id === id);
+  log2(
+    "warn",
+    `cline-free: account ${acc?.label ?? id} is out of Cline credits \u2014 skipping it for paid models until OpenCode restarts${detail ? ` (${detail})` : ""}`,
+    { accountId: id }
+  );
+}
 function selectAccount(pool, now = Date.now(), model) {
   const candidates = allCandidates(pool);
   const healthy = candidates.filter((a) => {
     if (a.limitedUntil && a.limitedUntil > now) return false;
+    if (isPaidModel(model) && hasNoCredits(pool, a.id)) return false;
     const until = modelLimitUntil(a, model);
     return !until || until <= now;
   });
@@ -1482,12 +1498,19 @@ function createRoutedFetch(pool, log2, baseFetch = (input, init) => globalThis.f
       }
     };
     const cleanDetail = (snippet) => snippet.replace(/\s+/g, " ").trim().slice(0, 160) || void 0;
+    const outOfCredits = (res) => paid && res.status === 402;
+    const parkNoCredits = async (res, id) => {
+      const detail = cleanDetail(await readSnippet(res));
+      lastRes = keepForReturn(res);
+      await drain(res).catch(() => {
+      });
+      markNoCredits(pool, id, log2, detail);
+    };
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      if (paid && tried.size > 0) break;
       let token;
       let accountId;
       const firstAcc = first ? pool.accounts.find((a) => a.id === first.accountId) : void 0;
-      const firstLimited = firstAcc ? (modelLimitUntil(firstAcc, reqModel) ?? 0) > now : false;
+      const firstLimited = firstAcc ? (modelLimitUntil(firstAcc, reqModel) ?? 0) > now || paid && hasNoCredits(pool, firstAcc.id) : false;
       if (attempt === 0 && first && !firstLimited) {
         ;
         ({ token, accountId } = first);
@@ -1553,6 +1576,12 @@ function createRoutedFetch(pool, log2, baseFetch = (input, init) => globalThis.f
           const h2 = new Headers(headers);
           h2.set("authorization", `Bearer ${withWorkOSPrefix(current)}`);
           const res2 = await origFetch(url, { method, headers: h2, body, signal });
+          if (outOfCredits(res2)) {
+            await drain(res).catch(() => {
+            });
+            await parkNoCredits(res2, acc.id);
+            continue;
+          }
           if (res2.status !== 401 && res2.status !== 403 && res2.status !== 429) {
             pool.activeId = acc.id;
             acc.lastUsed = Date.now();
@@ -1589,6 +1618,12 @@ function createRoutedFetch(pool, log2, baseFetch = (input, init) => globalThis.f
               const h2 = new Headers(headers);
               h2.set("authorization", `Bearer ${withWorkOSPrefix(fresh)}`);
               const res2 = await origFetch(url, { method, headers: h2, body, signal });
+              if (outOfCredits(res2)) {
+                await drain(res).catch(() => {
+                });
+                await parkNoCredits(res2, acc.id);
+                continue;
+              }
               if (res2.status !== 401 && res2.status !== 403 && res2.status !== 429) {
                 pool.activeId = acc.id;
                 acc.lastUsed = Date.now();
@@ -1652,6 +1687,10 @@ function createRoutedFetch(pool, log2, baseFetch = (input, init) => globalThis.f
         }
         continue;
       }
+      if (outOfCredits(res) && accountId && pool.accounts.some((a) => a.id === accountId)) {
+        await parkNoCredits(res, accountId);
+        continue;
+      }
       if (res.status !== 429) {
         if (accountId) {
           pool.activeId = accountId;
@@ -1662,7 +1701,7 @@ function createRoutedFetch(pool, log2, baseFetch = (input, init) => globalThis.f
             });
           }
         }
-        if (attempt > 0) log2("info", `cline-free: request recovered on ${pool.accounts.find((a) => a.id === accountId)?.label ?? "fallback account"} after 429/re-auth (attempt ${attempt + 1})`);
+        if (attempt > 0) log2("info", `cline-free: request recovered on ${pool.accounts.find((a) => a.id === accountId)?.label ?? "fallback account"} after 429/402/re-auth (attempt ${attempt + 1})`);
         return res;
       }
       const snippet = await readSnippet(res);
@@ -1683,12 +1722,16 @@ function createRoutedFetch(pool, log2, baseFetch = (input, init) => globalThis.f
       log2("error", `cline-free: all ${tried.size} account(s) rejected auth (401/403). ${quarantined ? `Quarantined: ${quarantined}. ` : ""}Run /connect \u2192 cline-free and log in again; rotation continues when a healthy account exists.`);
       return lastAuthRes;
     }
+    if (lastRes && paid) {
+      log2("error", `cline-free: no account could serve paid model ${reqModel} (all ${tried.size} tried are out of Cline credits or rate limited). Add credits or another Cline account via /connect.`);
+      return lastRes;
+    }
     if (lastRes) {
       const waiting = pool.accounts.filter((a) => a.limitedUntil && a.limitedUntil > Date.now()).map((a) => `${a.label ?? a.id}\u2192${new Date(a.limitedUntil).toISOString()}`).join(", ");
       log2("error", `cline-free: all ${tried.size} account(s) hit 429 daily quota. ${waiting ? `Cooling: ${waiting}. ` : ""}Add another Cline account via /connect to keep going.`);
       const earliest = [...pool.accounts].filter((a) => tokenOf(a)).sort((a, b) => (a.limitedUntil ?? 0) - (b.limitedUntil ?? 0))[0];
       const t = earliest ? tokenOf(earliest) : void 0;
-      if (!paid && earliest && t) {
+      if (earliest && t) {
         const h = new Headers(headers);
         h.set("authorization", `Bearer ${withWorkOSPrefix(t)}`);
         try {
@@ -1703,7 +1746,7 @@ function createRoutedFetch(pool, log2, baseFetch = (input, init) => globalThis.f
   });
 }
 function needsFailover(status) {
-  return status === 401 || status === 403 || status === 429;
+  return status === 401 || status === 402 || status === 403 || status === 429;
 }
 async function recoverResponse(pool, log2, request, response, baseFetch = (input, init) => globalThis.fetch(input, init)) {
   if (!needsFailover(response.status) || !isRoutableUrl(request.url)) return response;
