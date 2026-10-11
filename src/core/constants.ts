@@ -18,3 +18,23 @@ export const REFRESH_BUFFER_MS = 5 * 60 * 1000
 // different account when Cline answers 429.
 export const ACCOUNTS_FILE_NAME = "cline-free-accounts.json"
 export const DAY_MS = 24 * 60 * 60 * 1000
+
+// Cline surface headers (mirrors official clients — see cline/cline#13593).
+// The gateway serves the native free models only to requests carrying this
+// identity; without them it answers 403 "only available via Cline product
+// surfaces". Values match the Cline VS Code extension v4.1.23
+// (cline/cline: sdk/packages/llms/src/providers/request-headers.ts):
+// X-PLATFORM/-VERSION are VS Code's app name and version, X-CORE-VERSION is
+// the Cline SDK core version. X-Task-ID is added per request (session id).
+export const CLINE_HEADERS: Record<string, string> = {
+  Accept: "application/json",
+  "HTTP-Referer": "https://cline.bot",
+  "X-Title": "Cline",
+  "User-Agent": "Cline/4.1.23",
+  "X-CLIENT-TYPE": "VSCode Extension",
+  "X-CLIENT-VERSION": "4.1.23",
+  "X-CORE-VERSION": "0.0.92",
+  "X-PLATFORM": "Visual Studio Code",
+  "X-PLATFORM-VERSION": "1.141.0",
+  "X-IS-MULTIROOT": "false",
+}

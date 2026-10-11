@@ -362,3 +362,34 @@ export function createRoutedFetch(
     return origFetch(input, init)
   }) as typeof fetch
 }
+
+/** Statuses the router recovers from (auth refresh / account failover). */
+export function needsFailover(status: number): boolean {
+  return status === 401 || status === 403 || status === 429
+}
+
+/** Recover a response that already came back (V2 `http.response` hook).
+ * Runs the same router as a fetch wrapper, except the first attempt with the
+ * original identity reuses the response we already have instead of sending
+ * the request again; every later attempt (refresh, next account) is a real
+ * request. Responses that need no recovery are returned untouched. */
+export async function recoverResponse(
+  pool: PoolFile,
+  log: Logger,
+  request: Request,
+  response: Response,
+  baseFetch: typeof fetch = (input, init) => globalThis.fetch(input, init),
+): Promise<Response> {
+  if (!needsFailover(response.status) || !isRoutableUrl(request.url)) return response
+  const originalAuth = request.headers.get("authorization") ?? ""
+  let reused = false
+  const replayFetch = (async (input: any, init?: any): Promise<Response> => {
+    const auth = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined)).get("authorization") ?? ""
+    if (!reused && auth === originalAuth) {
+      reused = true
+      return response
+    }
+    return baseFetch(input, init)
+  }) as typeof fetch
+  return createRoutedFetch(pool, log, replayFetch)(request)
+}

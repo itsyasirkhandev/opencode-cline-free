@@ -1,6 +1,5 @@
 // Runtime-agnostic account selection: native-auth merge, pick, refresh and
-// fallback. Both the V1 auth loader and the (future) V2 request hook call
-// into this, so rotation behaves identically on every OpenCode version.
+// fallback. The V2 request hook calls into this.
 import { TerminalAuthError } from "./http.ts"
 import {
   type Logger,
@@ -17,6 +16,7 @@ import {
   pruneLimits,
   quarantineAccount,
   refreshAccount,
+  sameAccount,
   savePoolFile,
   selectAccount,
   tokenOf,
@@ -148,6 +148,60 @@ export async function resolveActiveToken(pool: PoolFile, log: Logger, opts: Reso
   pool.activeId = picked.id
   picked.lastUsed = Date.now()
   return token
+}
+
+/** A V2 integration credential, loosely typed so core stays host-agnostic. */
+export type ConnectionCredential =
+  | { type: "key"; key: string }
+  | { type: "oauth"; access: string; refresh: string; expires: number; metadata?: Record<string, unknown> }
+  | { type: string }
+  | undefined
+
+const oauthOwner = (pool: PoolFile, access: string): PoolAccount | undefined =>
+  pool.accounts.find((a) => {
+    const t = tokenOf(a)
+    return !!t && sameAccount(t, access)
+  })
+
+/** Merge the host's active credential into the pool. The pool is the source
+ * of truth and rotates tokens on its own, so an OAuth credential only lands
+ * when it is new to the pool or fresher than what the pool already holds:
+ * a stale host copy must never overwrite a rotated refresh token. */
+export function mergeConnectionCredential(pool: PoolFile, credential: ConnectionCredential): void {
+  if (credential?.type === "key" && "key" in credential) {
+    mergeNativeAuth(pool, { type: "api", key: credential.key })
+    return
+  }
+  if (credential?.type !== "oauth" || !("access" in credential)) return
+  const owner = oauthOwner(pool, credential.access)
+  if (owner && (owner.expires ?? 0) >= credential.expires) return
+  const email = credential.metadata?.email
+  mergeNativeAuth(pool, {
+    type: "oauth",
+    access: credential.access,
+    refresh: credential.refresh,
+    expires: credential.expires,
+    accountId: typeof email === "string" ? email : undefined,
+  })
+}
+
+/** Refresh a host-stored OAuth credential through the pool, so the pool's
+ * single-flight, file-locked refresh is the only code that ever spends a
+ * refresh token. Returns the pool's current tokens without a network call
+ * when the pool already rotated them. */
+export async function refreshViaPool(
+  pool: PoolFile,
+  credential: { access: string; refresh: string; expires: number },
+  log: Logger,
+): Promise<{ access: string; refresh: string; expires: number }> {
+  const acc = oauthOwner(pool, credential.access) ?? upsertOAuthAccount(pool, credential)
+  const fresh = typeof acc.expires === "number" && acc.expires - Date.now() >= REFRESH_BUFFER_MS
+  if (!fresh) await refreshAccount(pool, acc, log)
+  const access = tokenOf(acc)
+  if (!access || !acc.refresh || typeof acc.expires !== "number") {
+    throw new TerminalAuthError(`account ${acc.label ?? acc.id} has no usable session — re-login required`)
+  }
+  return { access, refresh: acc.refresh, expires: acc.expires }
 }
 
 /** Housekeeping run before each selection. */
