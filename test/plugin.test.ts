@@ -61,6 +61,8 @@ test("paid GLM is labelled (paid), never (free)", () => {
   assert.equal(displayName({ id: "cline-free/mimo-v2.6-flash", name: "Mimo V2.6 Flash" }), "Mimo V2.6 Flash (free)")
   assert.ok(isPaidModel("xiaomi/mimo-v2.6-pro"))
   assert.equal(displayName({ id: "xiaomi/mimo-v2.6-pro", name: "MiMo V2.6 Pro" }), "MiMo V2.6 Pro (paid)")
+  assert.ok(isPaidModel("openai/gpt-6.1-sol"))
+  assert.equal(displayName({ id: "openai/gpt-6.1-sol", name: "GPT-6.1 Sol" }), "GPT-6.1 Sol (paid)")
 })
 
 test("modelConfig maps variants and defaults", () => {
