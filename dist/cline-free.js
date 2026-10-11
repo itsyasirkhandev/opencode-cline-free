@@ -383,7 +383,7 @@ var MODELS = {
   // Added 2026-10-11. Limits/cost/inputs from the catalog entry
   // `xiaomi/mimo-v2.6-pro` (Cline's billed rates). Like V2.6 Flash, the
   // catalog lists `reasoning` but not `reasoning_effort` → on/off only.
-  // Not probe-verified (needs a real account with credits).
+  // Xiaomi's own endpoint is a thinking toggle (OpenRouter, models.dev).
   "xiaomi/mimo-v2.6-pro": {
     name: "MiMo V2.6 Pro",
     description: "Xiaomi MiMo 2.6 Pro \u2014 1T+ parameter flagship, multimodal \u2014 bills Cline credits (not free).",
@@ -394,16 +394,17 @@ var MODELS = {
     variants: ["none", "high"]
   },
   // Added 2026-10-11. Limits/cost/inputs from the catalog entry
-  // `openai/gpt-6.1-sol` (Cline's billed rates; catalog `file` → pdf). The
-  // catalog lists `reasoning_effort`; efforts not probe-verified
-  // (DEFAULT_VARIANTS).
+  // `openai/gpt-6.1-sol` (Cline's billed rates; catalog `file` → pdf).
+  // Efforts from OpenAI's model docs: low, medium (default), high, xhigh,
+  // max — `none`/`minimal` unsupported (matches models.dev providers).
   "openai/gpt-6.1-sol": {
     name: "GPT-6.1 Sol",
     description: "OpenAI GPT-6.1 Sol \u2014 agentic coding, computer use, document-heavy work \u2014 bills Cline credits (not free).",
     status: "paid",
     cost: { input: 2, output: 10, cache_read: 0.1 },
     limit: { context: 105e4, output: 128e3 },
-    input: ["text", "image", "pdf"]
+    input: ["text", "image", "pdf"],
+    variants: ["low", "medium", "high", "xhigh", "max"]
   },
   // --- Rotated out (kept so metadata is right if they return) ---
   // Left the free list on 2026-10-06.

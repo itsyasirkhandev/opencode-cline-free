@@ -1,6 +1,6 @@
 # opencode-cline-free
 
-**v0.7.4** · Use Cline's rotating **free models** inside OpenCode V2 with your Cline account —
+**v0.7.5** · Use Cline's rotating **free models** inside OpenCode V2 with your Cline account —
 same quota you see tagged `FREE` in Cline VSCode/CLI.
 
 > **Requires OpenCode V2 (2.x).** OpenCode 1.x users: stay on 0.6.3, the
@@ -40,7 +40,7 @@ Registered even though they are **not** in the live `free` array (and **not free
 
 - `z-ai/glm-5.3-flash` · low, high, max · **bills Cline credits** — the account balance drops by `creditsUsed`, whereas the free rotation records 0
 - `xiaomi/mimo-v2.6-pro` · `none` (reasoning off), `high` (reasoning on) · 1M context, 131K output, text/image/video/audio · **bills Cline credits** ($0.435 / $0.87 per 1M tokens)
-- `openai/gpt-6.1-sol` · low, medium, high (not probe-verified) · 1.05M context, 128K output, text/image/PDF · **bills Cline credits** ($2 / $10 per 1M tokens)
+- `openai/gpt-6.1-sol` · low, medium (default), high, xhigh, max (per OpenAI docs; `none`/`minimal` unsupported) · 1.05M context, 128K output, text/image/PDF · **bills Cline credits** ($2 / $10 per 1M tokens)
 
 Rotated out of the free list (ids kept in the plugin as known/stale where useful):
 
@@ -292,6 +292,7 @@ npm publish --access public
 
 | Version | Changes |
 |---|---|
+| **0.7.5** | `openai/gpt-6.1-sol` efforts corrected to low, medium, high, xhigh, max (from OpenAI docs) |
 | **0.7.4** | Register paid `openai/gpt-6.1-sol` (GPT-6.1 Sol, bills Cline credits) with catalog limits/pricing |
 | **0.7.3** | Register paid `xiaomi/mimo-v2.6-pro` (MiMo V2.6 Pro, bills Cline credits) with catalog limits/pricing and on/off reasoning |
 | **0.7.2** | Short account labels (email part before `@`, max 12 chars) so "Cline Free" is no longer cut off in OpenCode's Connect dialog when several accounts are logged in |
