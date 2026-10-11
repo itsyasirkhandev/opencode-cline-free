@@ -1,0 +1,38 @@
+---
+type Props = { command: string; label?: string }
+const { command, label = "Copy command" } = Astro.props
+---
+
+<div class="flex min-w-0 items-start gap-3 rounded-lg border border-neutral-800 bg-neutral-900 py-2 pr-2 pl-4 font-mono text-sm">
+  <span class="shrink-0 py-1 text-neutral-400 select-none" aria-hidden="true">$</span>
+  <code class="min-w-0 flex-1 py-1 wrap-anywhere text-neutral-100">{command}</code>
+  <button
+    type="button"
+    class="copy group relative grid size-9 shrink-0 cursor-pointer place-items-center rounded-md text-neutral-400 transition-colors duration-150 hover:bg-neutral-800 hover:text-neutral-100"
+    data-copy={command}
+    aria-label={label}
+  >
+    <svg class="size-4 transition-opacity duration-150 group-data-copied:opacity-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="13" height="13" x="9" y="9" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+    <svg class="absolute size-4 text-orange-400 opacity-0 transition-opacity duration-150 group-data-copied:opacity-100" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg>
+  </button>
+</div>
+
+<script>
+  const status = document.getElementById("copy-status")
+  for (const button of document.querySelectorAll<HTMLButtonElement>("button.copy")) {
+    button.addEventListener("click", async () => {
+      const text = button.dataset.copy ?? ""
+      try {
+        await navigator.clipboard.writeText(text)
+        button.dataset.copied = ""
+        if (status) status.textContent = "Command copied to clipboard"
+        setTimeout(() => {
+          delete button.dataset.copied
+          if (status) status.textContent = ""
+        }, 1600)
+      } catch {
+        if (status) status.textContent = "Copy failed. Select the command and copy it manually."
+      }
+    })
+  }
+</script>

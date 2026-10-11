@@ -3,6 +3,8 @@
 **v0.8.3** · Use Cline's rotating **free models** inside OpenCode V2 with your Cline account —
 same quota you see tagged `FREE` in Cline VSCode/CLI.
 
+**Website:** <https://itsyasirkhandev.github.io/opencode-cline-free/>
+
 > **Requires OpenCode V2 (2.x).** OpenCode 1.x users: stay on 0.6.3, the
 > last V1 build (`git checkout 29f68b9`).
 

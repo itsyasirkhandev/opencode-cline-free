@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://itsyasirkhandev.github.io/opencode-cline-free/sitemap-index.xml

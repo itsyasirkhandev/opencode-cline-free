@@ -1,0 +1,246 @@
+---
+import { Image } from "astro:assets"
+import Layout from "../layouts/Layout.astro"
+import CopyCommand from "../components/CopyCommand.astro"
+import Terminal from "../components/Terminal.astro"
+import pkg from "../../../package.json"
+
+import models from "../assets/screens/01-models.png"
+import variants from "../assets/screens/02-variants.png"
+import connect from "../assets/screens/03-connect.png"
+import accounts from "../assets/screens/04-accounts.png"
+import home from "../assets/screens/05-home.png"
+import login from "../assets/screens/06-login.png"
+
+const repo = "https://github.com/itsyasirkhandev/opencode-cline-free"
+const readme = `${repo}#readme`
+const install = "opencode plugin add github:itsyasirkhandev/opencode-cline-free"
+
+const title = "opencode-cline-free: Cline's free models in OpenCode"
+const description =
+  "An OpenCode V2 plugin that lets you sign in with your Cline account and use Cline's free models, with multi-account rotation and automatic failover."
+
+const steps = [
+  {
+    title: "Install the plugin",
+    body: "One command adds it to your global opencode.json. Restart OpenCode afterwards.",
+    code: install,
+  },
+  {
+    title: "Connect your Cline account",
+    body: "Sign in through the browser, reuse an existing Cline CLI login, or paste a token. Repeat for every extra account.",
+    code: "/connect  →  Cline Free",
+  },
+  {
+    title: "Pick a free model",
+    body: "Search for “cline free” and choose a model. Set its reasoning effort with /variants.",
+    code: "/models  →  cline free",
+  },
+]
+
+const features = [
+  {
+    title: "Free models, kept current",
+    body: "Cline’s live free list is read on every start, so new rotations show up without updating the plugin.",
+  },
+  {
+    title: "All your accounts in one pool",
+    body: "Connect as many Cline accounts as you like. Requests rotate across them automatically.",
+  },
+  {
+    title: "Failover when a limit hits",
+    body: "If an account reaches its daily limit, the same request is retried on the next account. Your turn doesn’t fail.",
+  },
+  {
+    title: "Limits tracked per model",
+    body: "An account capped on one model keeps serving the others until its reset time.",
+  },
+  {
+    title: "The right reasoning efforts",
+    body: "Each model offers only the effort levels it accepts, from simple on/off to minimal through max.",
+  },
+  {
+    title: "Paid models, clearly marked",
+    body: "Models that spend Cline credits are labelled (paid). Accounts with a $0 balance are skipped for them.",
+  },
+]
+
+const shots = [
+  { src: models, alt: "OpenCode model picker filtered to Cline Free models, with Muse Spark 1.3 Contributor (free) selected", caption: "Cline’s free models in /models" },
+  { src: variants, alt: "Reasoning effort picker listing Default, minimal, low, medium, high and xhigh", caption: "Reasoning effort in /variants" },
+  { src: login, alt: "Connect Cline Free dialog offering three login methods", caption: "Three ways to sign in" },
+  { src: connect, alt: "Connect an integration dialog showing Cline Free connected with two accounts", caption: "Connected accounts at a glance" },
+  { src: accounts, alt: "Cline Free account list with options to add, rename or delete accounts", caption: "Add, rename or remove accounts" },
+  { src: home, alt: "OpenCode home screen with Muse Spark 1.3 Contributor (free) via Cline Free selected", caption: "Ready to chat on a free model" },
+]
+
+const faqs = [
+  {
+    q: "Is it really free?",
+    a: "The free models use Cline’s own free quota, the same models tagged FREE in Cline. The quota is per account and resets daily. Models labelled (paid) spend Cline credits.",
+  },
+  {
+    q: "Which OpenCode version do I need?",
+    a: "OpenCode V2 (2.x). If you’re still on OpenCode 1.x, use plugin version 0.6.3.",
+  },
+  {
+    q: "What happens when I hit the daily limit?",
+    a: "The request is retried on your next connected account, and the limited account is skipped for that model until it resets. If every account is capped, you see Cline’s message with the reset time.",
+  },
+  {
+    q: "Where are my tokens stored?",
+    a: "In a local file at ~/.local/share/opencode/cline-free-accounts.json. They’re only sent to Cline’s sign-in and API servers.",
+  },
+  {
+    q: "How do I update or remove it?",
+    a: "Run opencode plugin update to update, or opencode plugin remove to uninstall.",
+  },
+  {
+    q: "Is this an official Cline or OpenCode project?",
+    a: "No. It’s an independent, MIT-licensed community plugin.",
+  },
+]
+
+const nav = [
+  { href: "#start", label: "Get started" },
+  { href: "#features", label: "Features" },
+  { href: "#screenshots", label: "Screenshots" },
+  { href: "#faq", label: "FAQ" },
+]
+---
+
+<Layout title={title} description={description}>
+  <header class="sticky top-0 z-40 border-b border-neutral-800/80 bg-neutral-950/95 pt-[env(safe-area-inset-top)]">
+    <div class="mx-auto flex h-16 max-w-5xl items-center justify-between gap-6 px-6">
+      <a href="#top" class="flex items-center gap-2.5 font-mono text-sm font-medium text-neutral-100">
+        <span class="grid size-7 place-items-center rounded-md bg-neutral-800 text-xs text-orange-400" aria-hidden="true">&gt;_</span>
+        opencode-cline-free
+      </a>
+      <nav aria-label="Primary" class="flex items-center gap-1">
+        <ul class="hidden items-center gap-1 md:flex">
+          {nav.map((n) => (
+            <li><a href={n.href} class="rounded-md px-3 py-2 text-sm text-neutral-400 transition-colors duration-150 hover:text-neutral-100">{n.label}</a></li>
+          ))}
+        </ul>
+        <a href={repo} class="ml-2 inline-flex items-center gap-2 rounded-md border border-neutral-800 px-3 py-2 text-sm text-neutral-200 transition-colors duration-150 hover:border-neutral-700 hover:bg-neutral-900">
+          <svg class="size-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5a12 12 0 0 0-3.8 23.4c.6.1.8-.3.8-.6v-2.1c-3.3.7-4-1.6-4-1.6-.6-1.4-1.4-1.8-1.4-1.8-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1.1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.8-1.6-2.7-.3-5.5-1.3-5.5-5.9 0-1.3.5-2.4 1.2-3.2-.1-.3-.5-1.5.1-3.2 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17.3 4.6 18.3 5 18.3 5c.7 1.7.3 2.9.1 3.2.8.8 1.2 1.9 1.2 3.2 0 4.6-2.8 5.6-5.5 5.9.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6A12 12 0 0 0 12 .5Z"></path></svg>
+          GitHub
+        </a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main" tabindex="-1" class="outline-none">
+    <!-- Hero -->
+    <section id="top" aria-labelledby="hero-title" class="mx-auto grid max-w-5xl gap-14 px-6 pt-16 pb-24 sm:pt-24 lg:grid-cols-2 lg:items-center lg:gap-12">
+      <div class="min-w-0">
+        <p class="enter font-mono text-sm text-orange-400" style="--i:0">OpenCode V2 plugin · v{pkg.version}</p>
+        <h1 id="hero-title" class="enter mt-4 text-4xl font-semibold text-balance text-neutral-50 sm:text-5xl" style="--i:1">
+          Cline’s free models, right inside OpenCode.
+        </h1>
+        <p class="enter mt-6 max-w-xl text-lg text-pretty text-neutral-400" style="--i:2">
+          Sign in with your Cline account and use the same free models Cline gives you in VS Code. Connect several accounts and the plugin switches between them when one hits its daily limit.
+        </p>
+        <div class="enter mt-8 max-w-xl" style="--i:3">
+          <CopyCommand command={install} label="Copy install command" />
+          <div class="mt-5 flex flex-wrap items-center gap-x-6 gap-y-3 text-sm">
+            <a href="#start" class="rounded-md bg-neutral-100 px-4 py-2.5 font-medium text-neutral-950 transition-colors duration-150 hover:bg-white">Get started</a>
+            <a href={readme} class="text-neutral-300 underline decoration-neutral-700 underline-offset-4 transition-colors duration-150 hover:text-neutral-50 hover:decoration-neutral-400">Read the docs</a>
+          </div>
+        </div>
+      </div>
+      <div class="enter min-w-0" style="--i:4">
+        <Terminal />
+      </div>
+    </section>
+
+    <!-- Steps -->
+    <section id="start" aria-labelledby="start-title" class="border-t border-neutral-800/80">
+      <div class="mx-auto max-w-5xl px-6 py-24">
+        <h2 id="start-title" class="reveal text-3xl font-semibold text-balance text-neutral-50">Up and running in three steps</h2>
+        <ol class="mt-12 grid gap-6 md:grid-cols-3">
+          {steps.map((s, i) => (
+            <li class="reveal flex min-w-0 flex-col rounded-xl border border-neutral-800 bg-neutral-900/50 p-6">
+              <span class="grid size-8 place-items-center rounded-full border border-neutral-700 font-mono text-sm text-orange-400 tabular-nums" aria-hidden="true">{i + 1}</span>
+              <h3 class="mt-5 text-lg font-medium text-neutral-50">{s.title}</h3>
+              <p class="mt-2 flex-1 text-pretty text-neutral-400">{s.body}</p>
+              <code class="mt-5 block rounded-md bg-neutral-950 px-3 py-2 font-mono text-xs wrap-anywhere text-neutral-200">{s.code}</code>
+            </li>
+          ))}
+        </ol>
+      </div>
+    </section>
+
+    <!-- Features -->
+    <section id="features" aria-labelledby="features-title" class="border-t border-neutral-800/80">
+      <div class="mx-auto max-w-5xl px-6 py-24">
+        <h2 id="features-title" class="reveal text-3xl font-semibold text-balance text-neutral-50">What you get</h2>
+        <p class="reveal mt-4 max-w-2xl text-lg text-pretty text-neutral-400">Everything runs locally inside OpenCode. There’s no extra server and nothing to configure after you sign in.</p>
+        <ul class="mt-12 grid gap-x-10 gap-y-10 sm:grid-cols-2 lg:grid-cols-3">
+          {features.map((f) => (
+            <li class="reveal border-t border-neutral-800 pt-6">
+              <h3 class="font-medium text-neutral-50">{f.title}</h3>
+              <p class="mt-2 text-pretty text-neutral-400">{f.body}</p>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </section>
+
+    <!-- Screenshots -->
+    <section id="screenshots" aria-labelledby="shots-title" class="border-t border-neutral-800/80">
+      <div class="mx-auto max-w-5xl px-6 py-24">
+        <h2 id="shots-title" class="reveal text-3xl font-semibold text-balance text-neutral-50">See it in OpenCode</h2>
+        <p class="reveal mt-4 max-w-2xl text-lg text-pretty text-neutral-400">Real screenshots from OpenCode 2.0.26, with demo accounts.</p>
+        <ul class="mt-12 grid gap-8 sm:grid-cols-2">
+          {shots.map((s) => (
+            <li class="reveal">
+              <figure>
+                <a href={s.src.src} class="block overflow-hidden rounded-xl border border-neutral-800 bg-neutral-900 transition-colors duration-150 hover:border-neutral-600">
+                  <Image src={s.src} alt={s.alt} widths={[480, 960, 1464]} sizes="(min-width: 1024px) 480px, (min-width: 640px) 50vw, 100vw" loading="lazy" decoding="async" class="h-auto w-full" />
+                  <span class="sr-only">(open full size)</span>
+                </a>
+                <figcaption class="mt-3 text-sm text-neutral-400">{s.caption}</figcaption>
+              </figure>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </section>
+
+    <!-- FAQ -->
+    <section id="faq" aria-labelledby="faq-title" class="border-t border-neutral-800/80">
+      <div class="mx-auto max-w-3xl px-6 py-24">
+        <h2 id="faq-title" class="reveal text-3xl font-semibold text-balance text-neutral-50">Questions</h2>
+        <div class="mt-10 divide-y divide-neutral-800 border-y border-neutral-800">
+          {faqs.map((f) => (
+            <details class="group reveal">
+              <summary class="flex cursor-pointer list-none items-center justify-between gap-6 py-5 font-medium text-neutral-100 [&::-webkit-details-marker]:hidden">
+                {f.q}
+                <svg class="size-4 shrink-0 text-neutral-500 transition-transform duration-150 group-open:rotate-45" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>
+              </summary>
+              <p class="pb-5 text-pretty text-neutral-400">{f.a}</p>
+            </details>
+          ))}
+        </div>
+        <p class="mt-10 text-neutral-400">
+          More detail, including the current free models and manual install, is in the{" "}
+          <a href={readme} class="text-neutral-100 underline decoration-neutral-700 underline-offset-4 transition-colors duration-150 hover:decoration-neutral-400">README on GitHub</a>.
+        </p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="border-t border-neutral-800/80 pb-[env(safe-area-inset-bottom)]">
+    <div class="mx-auto flex max-w-5xl flex-col gap-4 px-6 py-10 text-sm text-neutral-400 sm:flex-row sm:items-center sm:justify-between">
+      <p>MIT License · © 2026 Yasir Khan · Not affiliated with Cline or OpenCode.</p>
+      <ul class="flex gap-6">
+        <li><a href={repo} class="transition-colors duration-150 hover:text-neutral-50">GitHub</a></li>
+        <li><a href={`${repo}#changelog-high-level`} class="transition-colors duration-150 hover:text-neutral-50">Changelog</a></li>
+        <li><a href={`${repo}/issues`} class="transition-colors duration-150 hover:text-neutral-50">Issues</a></li>
+      </ul>
+    </div>
+  </footer>
+
+  <p id="copy-status" class="sr-only" role="status" aria-live="polite"></p>
+</Layout>
