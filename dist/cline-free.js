@@ -1748,6 +1748,11 @@ function providerInput(entries, meta) {
     models: entries.map((entry) => toModelInfo(entry, meta[entry.id]))
   };
 }
+function accountLabel(email) {
+  const local = email?.split("@")[0];
+  if (!local) return void 0;
+  return local.length > 12 ? `${local.slice(0, 11)}\u2026` : local;
+}
 var oauthCredential = (methodID, creds, email) => ({
   type: "oauth",
   methodID,
@@ -1819,7 +1824,7 @@ var setup = async (ctx) => {
         const creds = await refreshViaPool(pool, credential, log);
         return oauthCredential(credential.methodID, creds, payloadEmail(creds.access));
       },
-      label: (credential) => payloadEmail(credential.access)
+      label: (credential) => accountLabel(payloadEmail(credential.access))
     });
     editor.method.update({
       integrationID: PROVIDER_ID,
@@ -1861,7 +1866,7 @@ var setup = async (ctx) => {
         const creds = await refreshViaPool(pool, credential, log);
         return oauthCredential(credential.methodID, creds, payloadEmail(creds.access));
       },
-      label: (credential) => payloadEmail(credential.access)
+      label: (credential) => accountLabel(payloadEmail(credential.access))
     });
     editor.method.update({ integrationID: PROVIDER_ID, method: { type: "key", label: "Cline token (manual)" } });
   });

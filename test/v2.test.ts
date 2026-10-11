@@ -7,7 +7,7 @@ import { join } from "node:path"
 import { mergeConnectionCredential, refreshViaPool } from "../src/core/account.ts"
 import { recoverResponse } from "../src/core/router.ts"
 import type { Logger, PoolFile } from "../src/core/pool.ts"
-import { providerInput, setup, toModelInfo } from "../src/v2.ts"
+import { accountLabel, providerInput, setup, toModelInfo } from "../src/v2.ts"
 
 const log: Logger = () => {}
 const CHAT = "https://api.cline.bot/api/v1/chat/completions"
@@ -200,4 +200,10 @@ test("setup registers the provider, login methods, scoped HTTP hooks and tools",
   assert.match(String(status.content), /2 stored/)
 
   assert.equal(typeof cleanup, "function")
+})
+
+test("accountLabel keeps connection labels short so the integration name fits", () => {
+  assert.equal(accountLabel("muhammad.yasir.khan.dev@gmail.com"), "muhammad.ya…")
+  assert.equal(accountLabel("third.person@yahoo.com"), "third.person")
+  assert.equal(accountLabel(undefined), undefined)
 })

@@ -81,6 +81,15 @@ export function providerInput(entries: FreeEntry[], meta: Record<string, AutoMet
   }
 }
 
+/** OpenCode's "Connect an integration" dialog lists every account label
+ * next to the integration name, so full emails crowd out "Cline Free".
+ * Use the email's local part, capped at 12 characters. */
+export function accountLabel(email: string | undefined) {
+  const local = email?.split("@")[0]
+  if (!local) return undefined
+  return local.length > 12 ? `${local.slice(0, 11)}…` : local
+}
+
 const oauthCredential = (methodID: string, creds: { access: string; refresh: string; expires: number }, email?: string): OAuthCredential =>
   ({
     type: "oauth",
@@ -167,7 +176,7 @@ export const setup: Plugin.Plugin["setup"] = async (ctx) => {
         const creds = await refreshViaPool(pool, credential, log)
         return oauthCredential(credential.methodID, creds, payloadEmail(creds.access))
       },
-      label: (credential) => payloadEmail(credential.access),
+      label: (credential) => accountLabel(payloadEmail(credential.access)),
     })
     editor.method.update({
       integrationID: PROVIDER_ID,
@@ -211,7 +220,7 @@ export const setup: Plugin.Plugin["setup"] = async (ctx) => {
         const creds = await refreshViaPool(pool, credential, log)
         return oauthCredential(credential.methodID, creds, payloadEmail(creds.access))
       },
-      label: (credential) => payloadEmail(credential.access),
+      label: (credential) => accountLabel(payloadEmail(credential.access)),
     })
     // Stored by OpenCode as-is; merged into the pool on the next request.
     // Use the cline_free_add_token tool to validate a token up front.
