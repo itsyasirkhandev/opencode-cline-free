@@ -10,10 +10,12 @@ Live source: `GET https://api.cline.bot/api/v1/ai/cline/recommended-models`
 (`free` array). The plugin fetches it on every startup, so rotations appear
 automatically. Offline it falls back to a bundled list.
 
-## Current free rotation (checked 2026-10-06)
+## Current free rotation (checked 2026-10-11)
 
 | Model id | Notes |
 |---|---|
+| `cline-free/step-5-preview` | Cline-only free (added 2026-10-11), StepFun Step 5 Preview (sparse MoE, 1M context) · low, medium, high (not probe-verified) |
+| `cline-free/solar-mini4` | Cline-only free (added 2026-10-11), Upstage Solar Mini 4 (35B MoE, 524K context) · low, medium, high (not probe-verified) |
 | `cline-free/mimo-v2.6-flash` | Cline-only free, MiMo 2.6 (309B MoE) · `none` (reasoning off), `high` (reasoning on) — on/off only |
 | `cline-free/muse-spark-1.3-contributor` | Cline-only free · minimal, low, medium, high, xhigh (`max` fails server-side) |
 
@@ -248,7 +250,7 @@ npm publish --access public
 
 | Version | Changes |
 |---|---|
-| **0.7.0** | Runs on **OpenCode V2** (`@opencode/plugin` 2.x): models, login methods, 429/401 failover and the 3 tools ported to the V2 API. **V1 support dropped** — OpenCode 1.x users stay on 0.6.3. Config key is now `plugins` |
+| **0.7.0** | Runs on **OpenCode V2** (`@opencode/plugin` 2.x): models, login methods, 429/401 failover and the 3 tools ported to the V2 API. **V1 support dropped** — OpenCode 1.x users stay on 0.6.3. Config key is now `plugins`. Free rotation sync (2026-10-11): `cline-free/step-5-preview` and `cline-free/solar-mini4` added to the offline fallback |
 | **0.6.2** | Sync free rotation (2026-10-06): `stealth/space-bunny-alpha` rotated out (free list is now mimo-v2.6-flash + muse-spark-1.3-contributor); MiMo efforts reduced to `none`/`high` since its reasoning is on/off only |
 | **0.6.1** | `cline-free/deepseek-v4.1-flash` removed from the free fallback (left the free list 2026-10-05, now paid); new free models get limits, inputs and price automatically from Cline's public model catalog, cached with the list |
 | **0.6.3** | Internal refactor: shared code moved to `src/core/`, OpenCode V1 glue isolated in `src/v1.ts` (prep for OpenCode V2 support). No behaviour change |

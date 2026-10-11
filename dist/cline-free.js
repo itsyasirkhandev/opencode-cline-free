@@ -328,7 +328,27 @@ var DEFAULT_VARIANTS = ["low", "medium", "high"];
 var FULL = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 var NO_NONE = ["minimal", "low", "medium", "high", "xhigh", "max"];
 var MODELS = {
-  // --- Current free rotation (checked 2026-10-06) ---
+  // --- Current free rotation (checked 2026-10-11) ---
+  // Added 2026-10-11. Limits/cost/inputs from the catalog entry
+  // `stepfun/step-5-preview`; efforts not probe-verified (DEFAULT_VARIANTS).
+  "cline-free/step-5-preview": {
+    name: "Step 5 Preview",
+    description: "StepFun's flagship model for agentic work, built on a sparse Mixture-of-Experts.",
+    status: "free",
+    cost: { input: 1, output: 2.7, cache_read: 0.05 },
+    limit: { context: 1e6, output: 64e3 },
+    input: ["text", "image", "video"]
+  },
+  // Added 2026-10-11. Limits/cost/inputs from the catalog entry
+  // `upstage/solar-mini4`; efforts not probe-verified (DEFAULT_VARIANTS).
+  "cline-free/solar-mini4": {
+    name: "Solar Mini 4",
+    description: "Upstage's compact 35B mixture-of-experts (3B active).",
+    status: "free",
+    cost: { input: 0.05, output: 0.2, cache_read: 5e-3 },
+    limit: { context: 524288, output: 131072 },
+    input: ["text"]
+  },
   "cline-free/mimo-v2.6-flash": {
     name: "MiMo V2.6 Flash",
     description: "Xiaomi MiMo 2.6 Flash \u2014 309B MoE (15B active), hybrid attention, multimodal.",

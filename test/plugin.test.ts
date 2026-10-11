@@ -40,6 +40,8 @@ test("fallback list matches the current free rotation", () => {
     [
       "cline-free/mimo-v2.6-flash",
       "cline-free/muse-spark-1.3-contributor",
+      "cline-free/solar-mini4",
+      "cline-free/step-5-preview",
     ],
   )
 })
