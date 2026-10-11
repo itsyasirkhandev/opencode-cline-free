@@ -374,11 +374,13 @@ export function createRoutedFetch(
         .map((a) => `${a.label ?? a.id}→${new Date(a.limitedUntil!).toISOString()}`)
         .join(", ")
       log("error", `cline-free: all ${tried.size} account(s) hit 429 daily quota. ${waiting ? `Cooling: ${waiting}. ` : ""}Add another Cline account via /connect to keep going.`)
-      // Replay once on the earliest-reset account so the caller sees the
-      // real server error body instead of a synthesized one.
+      // Replay once on the earliest-reset account (for this model when
+      // known) so the caller sees the real server error body instead of a
+      // synthesized one.
+      const resetOf = (a: PoolFile["accounts"][number]) => modelLimitUntil(a, reqModel) ?? a.limitedUntil ?? 0
       const earliest = [...pool.accounts]
         .filter((a) => tokenOf(a))
-        .sort((a, b) => (a.limitedUntil ?? 0) - (b.limitedUntil ?? 0))[0]
+        .sort((a, b) => resetOf(a) - resetOf(b))[0]
       const t = earliest ? tokenOf(earliest) : undefined
       if (earliest && t) {
         const h = new Headers(headers)

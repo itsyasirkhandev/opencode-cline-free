@@ -162,6 +162,22 @@ test("paid model tries each account once on 429, with no extra diagnostic replay
   assert.equal(calls, 3)
 })
 
+test("all accounts 429: the error replay goes to the earliest reset for the request's model", async () => {
+  const pool = poolOf(2)
+  const M = "cline-free/mimo-v2.6-flash"
+  // a0 resets last overall (other model) but first for M.
+  markAccountLimited(pool, "a0", 9 * 3600_000, log, undefined, "cline-free/muse-spark-1.3-contributor")
+  const seen: string[] = []
+  const routed = createRoutedFetch(pool, log, (async (_u: any, init: any) => {
+    const auth = new Headers(init.headers).get("authorization")!
+    seen.push(auth)
+    return new Response(`Try again in ${auth.endsWith("_0") ? 1 : 2}h`, { status: 429 })
+  }) as typeof fetch)
+  const res = await routed(CHAT, { method: "POST", headers: { authorization: "Bearer sk_test_0" }, body: body(M) })
+  assert.equal(res.status, 429)
+  assert.deepEqual(seen, ["Bearer sk_test_0", "Bearer sk_test_1", "Bearer sk_test_0"])
+})
+
 test("non-Cline URLs pass straight through", async () => {
   let calls = 0
   const routed = createRoutedFetch(poolOf(1), log, (async () => {

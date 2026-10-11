@@ -1,6 +1,6 @@
 # opencode-cline-free
 
-**v0.8.2** · Use Cline's rotating **free models** inside OpenCode V2 with your Cline account —
+**v0.8.3** · Use Cline's rotating **free models** inside OpenCode V2 with your Cline account —
 same quota you see tagged `FREE` in Cline VSCode/CLI.
 
 > **Requires OpenCode V2 (2.x).** OpenCode 1.x users: stay on 0.6.3, the
@@ -300,6 +300,7 @@ npm publish --access public
 
 | Version | Changes |
 |---|---|
+| **0.8.3** | When every account hits its limit on a free model, the one replay that shows Cline's real error goes to the account whose cooldown for that model ends first |
 | **0.8.2** | When every account is cooling down, the request goes to the account whose cooldown for that model ends first (it picked the last one before) |
 | **0.8.1** | Account picks are per model: an account capped on one model still serves the others, the first pick for a paid model skips $0-balance accounts, and `cline_free_status` flags them `NO-CREDITS` |
 | **0.8.0** | Paid models now switch accounts on `429` and on `402 Insufficient balance`; a $0-balance account is skipped for paid models until OpenCode restarts (free models unaffected) |

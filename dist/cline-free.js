@@ -1737,7 +1737,8 @@ function createRoutedFetch(pool, log2, baseFetch = (input, init) => globalThis.f
     if (lastRes) {
       const waiting = pool.accounts.filter((a) => a.limitedUntil && a.limitedUntil > Date.now()).map((a) => `${a.label ?? a.id}\u2192${new Date(a.limitedUntil).toISOString()}`).join(", ");
       log2("error", `cline-free: all ${tried.size} account(s) hit 429 daily quota. ${waiting ? `Cooling: ${waiting}. ` : ""}Add another Cline account via /connect to keep going.`);
-      const earliest = [...pool.accounts].filter((a) => tokenOf(a)).sort((a, b) => (a.limitedUntil ?? 0) - (b.limitedUntil ?? 0))[0];
+      const resetOf = (a) => modelLimitUntil(a, reqModel) ?? a.limitedUntil ?? 0;
+      const earliest = [...pool.accounts].filter((a) => tokenOf(a)).sort((a, b) => resetOf(a) - resetOf(b))[0];
       const t = earliest ? tokenOf(earliest) : void 0;
       if (earliest && t) {
         const h = new Headers(headers);
