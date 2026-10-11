@@ -1,4 +1,4 @@
 // Entry point for loading the plugin straight from a clone
 // (OpenCode V2: `"plugins": ["/path/to/opencode-cline-free"]`). Source lives in ./src; the single-file
-// bundle for copy-installs is dist/cline-free.js (`npm run build`).
+// bundle for copy-installs is dist/cline-free.js (`npm run bundle`).
 export { default, __clineFreeTest } from "./src/index.ts"

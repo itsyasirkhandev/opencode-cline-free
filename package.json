@@ -1,6 +1,6 @@
 {
   "name": "opencode-cline-free",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "OpenCode V2 plugin that exposes Cline's rotating free models (cline-free + free OpenRouter-style ids) via your Cline account, with multi-account pooling and automatic 429 failover.",
   "type": "module",
   "main": "index.ts",
@@ -29,7 +29,7 @@
   "scripts": {
     "typecheck": "tsc -p .",
     "test": "tsx --test test/*.test.ts",
-    "build": "esbuild src/index.ts --bundle --format=esm --platform=node --target=es2022 --external:@opencode/plugin --outfile=dist/cline-free.js",
-    "check": "npm run typecheck && npm test && npm run build"
+    "bundle": "esbuild src/index.ts --bundle --format=esm --platform=node --target=es2022 --external:@opencode/plugin --outfile=dist/cline-free.js",
+    "check": "npm run typecheck && npm test && npm run bundle"
   }
 }

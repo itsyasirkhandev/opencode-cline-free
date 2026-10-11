@@ -1,6 +1,6 @@
 # opencode-cline-free
 
-**v0.7.0** · Use Cline's rotating **free models** inside OpenCode V2 with your Cline account —
+**v0.7.1** · Use Cline's rotating **free models** inside OpenCode V2 with your Cline account —
 same quota you see tagged `FREE` in Cline VSCode/CLI.
 
 > **Requires OpenCode V2 (2.x).** OpenCode 1.x users: stay on 0.6.3, the
@@ -49,7 +49,18 @@ report (probe-verified reasoning levels) and provide the offline fallback.
 After a rotation, restart OpenCode (a second restart picks up a background
 refresh if the saved copy was older).
 
-## Install (local)
+## Install
+
+One command (OpenCode V2):
+
+```bash
+opencode plugin add github:itsyasirkhandev/opencode-cline-free
+```
+
+This installs the plugin and adds it to your global `opencode.json`. Update
+later with `opencode plugin update`, remove with `opencode plugin remove`.
+
+### Manual install
 
 ```bash
 git clone https://github.com/itsyasirkhandev/opencode-cline-free.git
@@ -192,12 +203,18 @@ single-file bundle for copy-installs and is committed.
 npm ci
 npm run typecheck
 npm test
-npm run build   # rebuild dist/ before committing
+npm run bundle  # rebuild dist/ before committing
 npm run check   # all three
 ```
 
 CI (`.github/workflows/ci.yml`) runs these on every push and pull request and
 fails if `dist/` is out of date.
+
+> There is deliberately **no `build` script**: for git installs
+> (`opencode plugin add github:...`) npm runs a nested `npm install` "prepare"
+> step on any package with a `build`/`prepare`/`install`-type script, and that
+> step fails inside OpenCode (`git dep preparation failed`). The committed
+> `dist/` and TypeScript sources need no build at install time.
 
 ## Publish to npm (optional)
 
@@ -250,6 +267,7 @@ npm publish --access public
 
 | Version | Changes |
 |---|---|
+| **0.7.1** | One-command install: `opencode plugin add github:itsyasirkhandev/opencode-cline-free` now works (the `build` script, renamed to `bundle`, made npm's git-dep "prepare" step fail with `git dep preparation failed`) |
 | **0.7.0** | Runs on **OpenCode V2** (`@opencode/plugin` 2.x): models, login methods, 429/401 failover and the 3 tools ported to the V2 API. **V1 support dropped** — OpenCode 1.x users stay on 0.6.3. Config key is now `plugins`. Free rotation sync (2026-10-11): `cline-free/step-5-preview` and `cline-free/solar-mini4` added to the offline fallback |
 | **0.6.2** | Sync free rotation (2026-10-06): `stealth/space-bunny-alpha` rotated out (free list is now mimo-v2.6-flash + muse-spark-1.3-contributor); MiMo efforts reduced to `none`/`high` since its reasoning is on/off only |
 | **0.6.1** | `cline-free/deepseek-v4.1-flash` removed from the free fallback (left the free list 2026-10-05, now paid); new free models get limits, inputs and price automatically from Cline's public model catalog, cached with the list |

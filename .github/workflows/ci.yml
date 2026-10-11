@@ -16,6 +16,6 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
-      - run: npm run build
+      - run: npm run bundle
       - name: dist/ is up to date
-        run: git diff --exit-code -- dist/ || (echo "Run npm run build and commit dist/" && exit 1)
+        run: git diff --exit-code -- dist/ || (echo "Run npm run bundle and commit dist/" && exit 1)
