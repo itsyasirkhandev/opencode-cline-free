@@ -4,7 +4,7 @@ import { CHAT_BASE_URL, CLINE_HEADERS, PROVIDER_ID } from "./core/constants.ts"
 import { withWorkOSPrefix } from "./core/http.ts"
 import { loadFreeModels } from "./core/modelList.ts"
 import { type AutoMeta, type FreeEntry, modelConfig } from "./core/models.ts"
-import { type Logger, allCandidates, dedupePool, fetchUserEmail, loadPoolFile, modelOfRequest, payloadEmail, pruneLimits, savePoolFile, upsertOAuthAccount } from "./core/pool.ts"
+import { type Logger, accountEmail, allCandidates, dedupePool, fetchUserEmail, forgetRemoval, loadPoolFile, modelOfRequest, payloadEmail, pruneLimits, sameAccount, savePoolFile, tokenOf, upsertOAuthAccount } from "./core/pool.ts"
 import { type ConnectionCredential, mergeConnectionCredential, refreshViaPool, resolveActiveToken, tidyPool } from "./core/account.ts"
 import { TOOL_DESCRIPTIONS, addToken, poolStatusText, removeAccount } from "./core/tools.ts"
 import { recoverResponse } from "./core/router.ts"
@@ -100,6 +100,24 @@ const oauthCredential = (methodID: string, creds: { access: string; refresh: str
     ...(email ? { metadata: { email } } : {}),
   }) as OAuthCredential
 
+/** Email for a connection: from the token when it carries one, else the
+ * email saved at login (`metadata.email`), else the pool account's label. */
+export function credentialEmail(
+  credential: { access: string; metadata?: Record<string, unknown> },
+  pool?: { accounts: Parameters<typeof accountEmail>[0][] },
+): string | undefined {
+  const saved = credential.metadata?.email
+  const owner = pool?.accounts.find((a) => {
+    const t = tokenOf(a)
+    return !!t && sameAccount(t, credential.access)
+  })
+  return (
+    payloadEmail(credential.access) ??
+    (typeof saved === "string" && saved.includes("@") ? saved : undefined) ??
+    (owner ? accountEmail(owner) : undefined)
+  )
+}
+
 const objectSchema = (properties: Record<string, { type: "string"; description: string }>, required: string[]) =>
   ({ type: "object", properties, required, additionalProperties: false }) as unknown as ToolInfo["input"]
 
@@ -140,6 +158,10 @@ export const setup: Plugin.Plugin["setup"] = async (ctx) => {
   }).catch(() => {})
 
   // --- Login methods (integration `cline-free`) ---
+  // OpenCode gives authorize() no cancel signal. A new device login
+  // supersedes the previous one: its polling stops and, if it still
+  // completes, the account is not added to the pool.
+  let deviceLogin: AbortController | undefined
   await ctx.integration.transform((editor) => {
     editor.update(PROVIDER_ID, (integration) => {
       integration.name = "Cline Free"
@@ -148,11 +170,17 @@ export const setup: Plugin.Plugin["setup"] = async (ctx) => {
       integrationID: PROVIDER_ID,
       method: { id: DEVICE_METHOD, type: "oauth", label: "Cline account (free models, recommended)" },
       authorize: async () => {
+        deviceLogin?.abort()
+        const attempt = new AbortController()
+        deviceLogin = attempt
         const device = await startDeviceAuth()
         const callback = (async () => {
-          const workos = await pollDeviceAuth(device.deviceCode, device.expiresInSeconds, device.intervalSeconds)
+          const workos = await pollDeviceAuth(device.deviceCode, device.expiresInSeconds, device.intervalSeconds, attempt.signal)
+          if (attempt.signal.aborted || disposed) throw new Error("device login was superseded by a newer login attempt")
           const creds = await registerWorkOSTokens(workos)
           const email = await fetchUserEmail(creds.access)
+          if (attempt.signal.aborted || disposed) throw new Error("device login was superseded by a newer login attempt")
+          forgetRemoval(pool, creds.access)
           const acc = upsertOAuthAccount(pool, creds, email, "oauth")
           if (email) acc.label = email
           void savePoolFile(pool).catch(() => {})
@@ -174,9 +202,10 @@ export const setup: Plugin.Plugin["setup"] = async (ctx) => {
       },
       refresh: async (credential) => {
         const creds = await refreshViaPool(pool, credential, log)
-        return oauthCredential(credential.methodID, creds, payloadEmail(creds.access))
+        // Keep the email saved at login: refreshed tokens may not carry one.
+        return oauthCredential(credential.methodID, creds, credentialEmail({ ...credential, access: creds.access }, pool))
       },
-      label: (credential) => accountLabel(payloadEmail(credential.access)),
+      label: (credential) => accountLabel(credentialEmail(credential, pool)),
     })
     editor.method.update({
       integrationID: PROVIDER_ID,
@@ -201,6 +230,7 @@ export const setup: Plugin.Plugin["setup"] = async (ctx) => {
           }
           // Update in place on same-user re-login, append only for new users
           // (quota is per Cline user).
+          forgetRemoval(pool, access)
           const acc = upsertOAuthAccount(pool, { access, refresh, expires }, session.email, "cli")
           if (session.email) acc.label = session.email
           void savePoolFile(pool).catch(() => {})
@@ -218,9 +248,10 @@ export const setup: Plugin.Plugin["setup"] = async (ctx) => {
       },
       refresh: async (credential) => {
         const creds = await refreshViaPool(pool, credential, log)
-        return oauthCredential(credential.methodID, creds, payloadEmail(creds.access))
+        // Keep the email saved at login: refreshed tokens may not carry one.
+        return oauthCredential(credential.methodID, creds, credentialEmail({ ...credential, access: creds.access }, pool))
       },
-      label: (credential) => accountLabel(payloadEmail(credential.access)),
+      label: (credential) => accountLabel(credentialEmail(credential, pool)),
     })
     // Stored by OpenCode as-is; merged into the pool on the next request.
     // Use the cline_free_add_token tool to validate a token up front.
@@ -242,7 +273,8 @@ export const setup: Plugin.Plugin["setup"] = async (ctx) => {
         .then(() => event.request.clone().arrayBuffer())
         .catch(() => null)
       const model = modelOfRequest(event.request.url, body)
-      const token = await resolveActiveToken(pool, log, { model })
+      // Same session + model → same account, so its prompt cache stays warm.
+      const token = await resolveActiveToken(pool, log, { model, sessionID: event.sessionID })
       if (token) event.request.headers.set("authorization", `Bearer ${withWorkOSPrefix(token)}`)
       event.request.headers.set("X-Task-ID", event.sessionID)
     },
@@ -251,7 +283,7 @@ export const setup: Plugin.Plugin["setup"] = async (ctx) => {
   await ctx.session.hook(
     "http.response",
     async (event) => {
-      event.response = await recoverResponse(pool, log, event.request, event.response)
+      event.response = await recoverResponse(pool, log, event.request, event.response, undefined, { sessionID: event.sessionID })
     },
     { providerID: PROVIDER_ID },
   )

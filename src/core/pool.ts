@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { refreshClineToken, validateClineToken } from "./auth.ts"
 import { ACCOUNTS_FILE_NAME, API_BASE, REFRESH_BUFFER_MS } from "./constants.ts"
 import { TerminalAuthError, TransientAuthError, fetchWithTimeout, sleep, withWorkOSPrefix } from "./http.ts"
@@ -37,7 +38,16 @@ export type PoolAccount = {
   lastProbeAt?: number
 }
 
-export type PoolFile = { version: 1; activeId?: string; accounts: PoolAccount[] }
+export type PoolFile = {
+  version: 1
+  activeId?: string
+  accounts: PoolAccount[]
+  /** Hashed identities removed with cline_free_remove. OpenCode keeps its own
+   * copy of the active connection, so without this the next request (or the
+   * next host-driven refresh) would copy a removed account straight back in.
+   * An explicit login for the same user clears the entry. */
+  removed?: string[]
+}
 
 /** Per-model 429 cooldowns make selectAccount model-aware: the router
  * extracts the model from the chat body and picks an account that still
@@ -232,7 +242,13 @@ export async function loadPoolFile(): Promise<PoolFile> {
             !!a && typeof a.id === "string" && (typeof a.access === "string" || typeof a.apiKey === "string"),
         )
       : []
-    return { version: 1, activeId: typeof data.activeId === "string" ? data.activeId : undefined, accounts }
+    const removed = Array.isArray(data.removed) ? data.removed.filter((r): r is string => typeof r === "string") : []
+    return {
+      version: 1,
+      activeId: typeof data.activeId === "string" ? data.activeId : undefined,
+      accounts,
+      ...(removed.length > 0 ? { removed } : {}),
+    }
   } catch {
     return { version: 1, accounts: [] }
   }
@@ -308,7 +324,7 @@ export async function withFileLock<T>(fn: () => Promise<T>, opts: { timeoutMs?: 
 
 export function pruneLimits(pool: PoolFile, now = Date.now()): boolean {
   let changed = false
-  for (const a of pool.accounts) {
+  for (const a of trackedAccounts(pool)) {
     if (a.limitedUntil && a.limitedUntil <= now) {
       delete a.limitedUntil
       delete a.lastError
@@ -351,6 +367,38 @@ export function tokenOf(a: PoolAccount): string | undefined {
   return a.access ?? a.apiKey
 }
 
+// Env accounts are never written to the pool file, but they still need
+// cooldowns, out-of-credit flags and quarantine like stored accounts. Keep
+// one in-memory object per env key so that state survives between requests.
+const envAccounts = new WeakMap<PoolFile, Map<string, PoolAccount>>()
+
+function envAccount(pool: PoolFile, id: string, key: string, label: string): PoolAccount {
+  let byId = envAccounts.get(pool)
+  if (!byId) {
+    byId = new Map()
+    envAccounts.set(pool, byId)
+  }
+  const existing = byId.get(id)
+  if (existing) {
+    existing.label = label
+    return existing
+  }
+  const acc: PoolAccount = { id, label, apiKey: key, source: "env", addedAt: 0 }
+  byId.set(id, acc)
+  return acc
+}
+
+/** Stored accounts plus the env accounts seen so far (in-memory state). */
+export function trackedAccounts(pool: PoolFile): PoolAccount[] {
+  return [...pool.accounts, ...(envAccounts.get(pool)?.values() ?? [])]
+}
+
+/** A stored or env account by id. */
+export function findAccount(pool: PoolFile, id: string | undefined): PoolAccount | undefined {
+  if (!id) return undefined
+  return pool.accounts.find((a) => a.id === id) ?? envAccounts.get(pool)?.get(id)
+}
+
 /** Pool accounts plus ephemeral env accounts, deduped by user then token.
  * Same Cline user with two sessions shares one daily quota, so only the
  * freshest entry per user is a rotation candidate. */
@@ -384,13 +432,14 @@ export function allCandidates(pool: PoolFile): PoolAccount[] {
     if (ukey) seenUser.add(ukey)
     seenToken.add(k)
     const fp = `${k.slice(0, 4)}${k.slice(-4)}${k.length}`
-    out.push({
-      id: `env-${fp}`,
-      label: envKeys.length > 1 ? `env-${i + 1} (${maskToken(key)})` : `env (${maskToken(key)})`,
-      apiKey: key.trim(),
-      source: "env",
-      addedAt: 0,
-    })
+    const acc = envAccount(
+      pool,
+      `env-${fp}`,
+      key.trim(),
+      envKeys.length > 1 ? `env-${i + 1} (${maskToken(key)})` : `env (${maskToken(key)})`,
+    )
+    if (acc.authFailedAt) return
+    out.push(acc)
   })
   return out
 }
@@ -594,6 +643,37 @@ export function upsertApiAccount(pool: PoolFile, key: string, label?: string, so
   return pool.accounts.find((a) => a.id === fresh.id) ?? fresh
 }
 
+// --- Removed accounts ---
+
+const MAX_REMOVED = 200
+
+/** Stable, non-reversible identity for a token: the Cline user when the
+ * token is a JWT, else the token itself. Hashed so the pool file never keeps
+ * a removed token around. */
+export function identityHash(token: string): string {
+  const id = clineUserKey(token) ?? `tok:${stripWorkOSPrefix(token)}`
+  return createHash("sha256").update(id).digest("hex").slice(0, 32)
+}
+
+export function isRemoved(pool: PoolFile, token: string): boolean {
+  return !!pool.removed?.includes(identityHash(token))
+}
+
+export function rememberRemoval(pool: PoolFile, token: string): void {
+  const id = identityHash(token)
+  const list = (pool.removed ?? []).filter((r) => r !== id)
+  list.push(id)
+  pool.removed = list.slice(-MAX_REMOVED)
+}
+
+/** An explicit login (device, CLI import, add-token) brings the user back. */
+export function forgetRemoval(pool: PoolFile, token: string): void {
+  if (!pool.removed) return
+  const id = identityHash(token)
+  pool.removed = pool.removed.filter((r) => r !== id)
+  if (pool.removed.length === 0) delete pool.removed
+}
+
 // In-flight refreshes keyed by account id (single-flight): concurrent
 // requests share ONE refresh instead of each firing its own. Without this,
 // rotation + reuse detection on the server side sees a replayed refresh
@@ -672,7 +752,7 @@ export const PROBE_INTERVAL_MS = 15 * 60 * 1000
 export async function probeQuarantinedAccounts(pool: PoolFile, log: Logger): Promise<void> {
   const now = Date.now()
   let changed = false
-  for (const acc of pool.accounts) {
+  for (const acc of trackedAccounts(pool)) {
     if (!acc.authFailedAt) continue
     if (acc.lastProbeAt && now - acc.lastProbeAt < PROBE_INTERVAL_MS) continue
     acc.lastProbeAt = now
@@ -714,7 +794,7 @@ export function markNoCredits(pool: PoolFile, id: string, log: Logger, detail?: 
   const ids = noCredits.get(pool) ?? new Set<string>()
   ids.add(id)
   noCredits.set(pool, ids)
-  const acc = pool.accounts.find((a) => a.id === id)
+  const acc = findAccount(pool, id)
   log(
     "warn",
     `cline-free: account ${acc?.label ?? id} is out of Cline credits — skipping it for paid models until OpenCode restarts${detail ? ` (${detail})` : ""}`,
@@ -733,6 +813,16 @@ function accountWideLimited(a: PoolAccount, now: number, model: string | undefin
   return !Object.values(a.modelLimits).some((u) => u >= until)
 }
 
+/** True when `a` can serve `model` right now: not out of credits (paid
+ * models), and neither its cooldown for the model nor its account-wide
+ * cooldown is running. */
+export function isAvailable(pool: PoolFile, a: PoolAccount, now: number, model: string | undefined): boolean {
+  if (isPaidModel(model) && hasNoCredits(pool, a.id)) return false
+  const until = modelLimitUntil(a, model)
+  if (until && until > now) return false
+  return !accountWideLimited(a, now, model)
+}
+
 /** Next healthy account in round-robin order; undefined when all limited.
  * An account is healthy only when its account-wide cooldown AND its cooldown
  * for the requested model (if any) have both expired. */
@@ -740,18 +830,59 @@ export function selectAccount(pool: PoolFile, now = Date.now(), model?: string):
   const candidates = allCandidates(pool)
   // Start scanning at the cursor, keyed on the full candidate order so
   // parallel requests spread across accounts.
-  const healthy = candidates.filter((a) => {
-    if (isPaidModel(model) && hasNoCredits(pool, a.id)) return false
-    const until = modelLimitUntil(a, model)
-    if (until && until > now) return false
-    return !accountWideLimited(a, now, model)
-  })
+  const healthy = candidates.filter((a) => isAvailable(pool, a, now, model))
   if (healthy.length === 0) return undefined
   const key = model ?? ""
   const cursor = rrCursors.get(key) ?? 0
   const pick = healthy[cursor % healthy.length] ?? healthy[0]
   rrCursors.set(key, (cursor + 1) % healthy.length)
   return pick
+}
+
+// --- Session pinning ---
+//
+// Prompt caches are warm only on the account that served the previous turn,
+// so a session sticks to one account per model and only moves when that
+// account is rate limited, out of credits or needs re-login. Without this the
+// round-robin cursor moved every turn of a session to a different account.
+const sessionPins = new WeakMap<PoolFile, Map<string, string>>()
+const MAX_PINS = 1000
+const pinKey = (sessionID: string, model: string | undefined) => `${sessionID}\u0000${model ?? ""}`
+
+export function pinnedAccountId(pool: PoolFile, sessionID: string, model: string | undefined): string | undefined {
+  return sessionPins.get(pool)?.get(pinKey(sessionID, model))
+}
+
+export function pinSession(pool: PoolFile, sessionID: string, model: string | undefined, accountId: string): void {
+  let pins = sessionPins.get(pool)
+  if (!pins) {
+    pins = new Map()
+    sessionPins.set(pool, pins)
+  }
+  const key = pinKey(sessionID, model)
+  pins.delete(key)
+  pins.set(key, accountId)
+  // Map keeps insertion order: drop the least recently pinned sessions.
+  while (pins.size > MAX_PINS) pins.delete(pins.keys().next().value!)
+}
+
+/** The session's pinned account while it can still serve `model`; otherwise
+ * the next healthy account in round-robin order, which becomes the new pin. */
+export function selectAccountForSession(
+  pool: PoolFile,
+  now: number,
+  model: string | undefined,
+  sessionID: string | undefined,
+): PoolAccount | undefined {
+  if (!sessionID) return selectAccount(pool, now, model)
+  const pinned = pinnedAccountId(pool, sessionID, model)
+  if (pinned) {
+    const acc = allCandidates(pool).find((a) => a.id === pinned)
+    if (acc && isAvailable(pool, acc, now, model)) return acc
+  }
+  const next = selectAccount(pool, now, model)
+  if (next) pinSession(pool, sessionID, model, next.id)
+  return next
 }
 
 export function markAccountLimited(
@@ -762,7 +893,7 @@ export function markAccountLimited(
   detail?: string,
   model?: string,
 ): void {
-  const acc = pool.accounts.find((a) => a.id === id)
+  const acc = findAccount(pool, id)
   const until = Date.now() + (retryAfterMs ?? nextUtcMidnightMs() - Date.now())
   const name = acc?.label ?? id
   if (acc) {

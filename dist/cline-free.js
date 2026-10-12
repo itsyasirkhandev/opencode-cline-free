@@ -140,13 +140,20 @@ async function startDeviceAuth() {
     intervalSeconds: data.interval ?? 5
   };
 }
-async function pollDeviceAuth(deviceCode, expiresInSeconds, intervalSeconds) {
+async function pollDeviceAuth(deviceCode, expiresInSeconds, intervalSeconds, signal) {
   const deadline = Date.now() + Math.max(30, expiresInSeconds - 10) * 1e3;
   let interval = Math.max(1, intervalSeconds);
+  const aborted = () => new DOMException("Cline device login was cancelled.", "AbortError");
+  const wait = (ms) => new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener("abort", () => (clearTimeout(timer), resolve()), { once: true });
+  });
   while (Date.now() <= deadline) {
+    if (signal?.aborted) throw aborted();
     let res;
     try {
       res = await fetchWithTimeout(`${WORKOS_API}/user_management/authenticate`, {
+        signal,
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
         body: new URLSearchParams({
@@ -157,7 +164,7 @@ async function pollDeviceAuth(deviceCode, expiresInSeconds, intervalSeconds) {
       });
     } catch (e) {
       if (isAbortError(e)) throw e;
-      await new Promise((r) => setTimeout(r, interval * 1e3));
+      await wait(interval * 1e3);
       continue;
     }
     const data = await res.json().catch(() => ({}));
@@ -165,12 +172,12 @@ async function pollDeviceAuth(deviceCode, expiresInSeconds, intervalSeconds) {
       return { accessToken: data.access_token, refreshToken: data.refresh_token };
     }
     if (data.error === "authorization_pending") {
-      await new Promise((r) => setTimeout(r, interval * 1e3));
+      await wait(interval * 1e3);
       continue;
     }
     if (data.error === "slow_down") {
       interval += 5;
-      await new Promise((r) => setTimeout(r, interval * 1e3));
+      await wait(interval * 1e3);
       continue;
     }
     if (data.error === "access_denied") {
@@ -522,6 +529,7 @@ function modelConfig(entry, auto) {
 }
 
 // src/core/pool.ts
+import { createHash } from "node:crypto";
 function modelOfRequest(url, body) {
   if (!body || !url.includes("/chat/completions")) return void 0;
   try {
@@ -668,7 +676,13 @@ async function loadPoolFile() {
     const accounts = Array.isArray(data.accounts) ? data.accounts.filter(
       (a) => !!a && typeof a.id === "string" && (typeof a.access === "string" || typeof a.apiKey === "string")
     ) : [];
-    return { version: 1, activeId: typeof data.activeId === "string" ? data.activeId : void 0, accounts };
+    const removed = Array.isArray(data.removed) ? data.removed.filter((r) => typeof r === "string") : [];
+    return {
+      version: 1,
+      activeId: typeof data.activeId === "string" ? data.activeId : void 0,
+      accounts,
+      ...removed.length > 0 ? { removed } : {}
+    };
   } catch {
     return { version: 1, accounts: [] };
   }
@@ -738,7 +752,7 @@ async function withFileLock(fn, opts = {}) {
 }
 function pruneLimits(pool, now = Date.now()) {
   let changed = false;
-  for (const a of pool.accounts) {
+  for (const a of trackedAccounts(pool)) {
     if (a.limitedUntil && a.limitedUntil <= now) {
       delete a.limitedUntil;
       delete a.lastError;
@@ -776,6 +790,29 @@ function collectEnvKeys() {
 function tokenOf(a) {
   return a.access ?? a.apiKey;
 }
+var envAccounts = /* @__PURE__ */ new WeakMap();
+function envAccount(pool, id, key, label) {
+  let byId = envAccounts.get(pool);
+  if (!byId) {
+    byId = /* @__PURE__ */ new Map();
+    envAccounts.set(pool, byId);
+  }
+  const existing = byId.get(id);
+  if (existing) {
+    existing.label = label;
+    return existing;
+  }
+  const acc = { id, label, apiKey: key, source: "env", addedAt: 0 };
+  byId.set(id, acc);
+  return acc;
+}
+function trackedAccounts(pool) {
+  return [...pool.accounts, ...envAccounts.get(pool)?.values() ?? []];
+}
+function findAccount(pool, id) {
+  if (!id) return void 0;
+  return pool.accounts.find((a) => a.id === id) ?? envAccounts.get(pool)?.get(id);
+}
 function allCandidates(pool) {
   const sorted = [...pool.accounts].sort((a, b) => freshnessOf(b) - freshnessOf(a));
   const seenToken = /* @__PURE__ */ new Set();
@@ -804,13 +841,14 @@ function allCandidates(pool) {
     if (ukey) seenUser.add(ukey);
     seenToken.add(k);
     const fp = `${k.slice(0, 4)}${k.slice(-4)}${k.length}`;
-    out.push({
-      id: `env-${fp}`,
-      label: envKeys.length > 1 ? `env-${i + 1} (${maskToken(key)})` : `env (${maskToken(key)})`,
-      apiKey: key.trim(),
-      source: "env",
-      addedAt: 0
-    });
+    const acc = envAccount(
+      pool,
+      `env-${fp}`,
+      key.trim(),
+      envKeys.length > 1 ? `env-${i + 1} (${maskToken(key)})` : `env (${maskToken(key)})`
+    );
+    if (acc.authFailedAt) return;
+    out.push(acc);
   });
   return out;
 }
@@ -977,6 +1015,26 @@ function upsertApiAccount(pool, key, label, source = "api") {
   pool.activeId ??= fresh.id;
   return pool.accounts.find((a) => a.id === fresh.id) ?? fresh;
 }
+var MAX_REMOVED = 200;
+function identityHash(token) {
+  const id = clineUserKey(token) ?? `tok:${stripWorkOSPrefix(token)}`;
+  return createHash("sha256").update(id).digest("hex").slice(0, 32);
+}
+function isRemoved(pool, token) {
+  return !!pool.removed?.includes(identityHash(token));
+}
+function rememberRemoval(pool, token) {
+  const id = identityHash(token);
+  const list = (pool.removed ?? []).filter((r) => r !== id);
+  list.push(id);
+  pool.removed = list.slice(-MAX_REMOVED);
+}
+function forgetRemoval(pool, token) {
+  if (!pool.removed) return;
+  const id = identityHash(token);
+  pool.removed = pool.removed.filter((r) => r !== id);
+  if (pool.removed.length === 0) delete pool.removed;
+}
 var refreshFlight = /* @__PURE__ */ new Map();
 async function refreshAccount(pool, acc, log2) {
   const inflight = refreshFlight.get(acc.id);
@@ -1034,7 +1092,7 @@ var PROBE_INTERVAL_MS = 15 * 60 * 1e3;
 async function probeQuarantinedAccounts(pool, log2) {
   const now = Date.now();
   let changed = false;
-  for (const acc of pool.accounts) {
+  for (const acc of trackedAccounts(pool)) {
     if (!acc.authFailedAt) continue;
     if (acc.lastProbeAt && now - acc.lastProbeAt < PROBE_INTERVAL_MS) continue;
     acc.lastProbeAt = now;
@@ -1066,7 +1124,7 @@ function markNoCredits(pool, id, log2, detail) {
   const ids = noCredits.get(pool) ?? /* @__PURE__ */ new Set();
   ids.add(id);
   noCredits.set(pool, ids);
-  const acc = pool.accounts.find((a) => a.id === id);
+  const acc = findAccount(pool, id);
   log2(
     "warn",
     `cline-free: account ${acc?.label ?? id} is out of Cline credits \u2014 skipping it for paid models until OpenCode restarts${detail ? ` (${detail})` : ""}`,
@@ -1079,14 +1137,15 @@ function accountWideLimited(a, now, model) {
   const until = a.limitedUntil;
   return !Object.values(a.modelLimits).some((u) => u >= until);
 }
+function isAvailable(pool, a, now, model) {
+  if (isPaidModel(model) && hasNoCredits(pool, a.id)) return false;
+  const until = modelLimitUntil(a, model);
+  if (until && until > now) return false;
+  return !accountWideLimited(a, now, model);
+}
 function selectAccount(pool, now = Date.now(), model) {
   const candidates = allCandidates(pool);
-  const healthy = candidates.filter((a) => {
-    if (isPaidModel(model) && hasNoCredits(pool, a.id)) return false;
-    const until = modelLimitUntil(a, model);
-    if (until && until > now) return false;
-    return !accountWideLimited(a, now, model);
-  });
+  const healthy = candidates.filter((a) => isAvailable(pool, a, now, model));
   if (healthy.length === 0) return void 0;
   const key = model ?? "";
   const cursor = rrCursors.get(key) ?? 0;
@@ -1094,8 +1153,36 @@ function selectAccount(pool, now = Date.now(), model) {
   rrCursors.set(key, (cursor + 1) % healthy.length);
   return pick;
 }
+var sessionPins = /* @__PURE__ */ new WeakMap();
+var MAX_PINS = 1e3;
+var pinKey = (sessionID, model) => `${sessionID}\0${model ?? ""}`;
+function pinnedAccountId(pool, sessionID, model) {
+  return sessionPins.get(pool)?.get(pinKey(sessionID, model));
+}
+function pinSession(pool, sessionID, model, accountId) {
+  let pins = sessionPins.get(pool);
+  if (!pins) {
+    pins = /* @__PURE__ */ new Map();
+    sessionPins.set(pool, pins);
+  }
+  const key = pinKey(sessionID, model);
+  pins.delete(key);
+  pins.set(key, accountId);
+  while (pins.size > MAX_PINS) pins.delete(pins.keys().next().value);
+}
+function selectAccountForSession(pool, now, model, sessionID) {
+  if (!sessionID) return selectAccount(pool, now, model);
+  const pinned = pinnedAccountId(pool, sessionID, model);
+  if (pinned) {
+    const acc = allCandidates(pool).find((a) => a.id === pinned);
+    if (acc && isAvailable(pool, acc, now, model)) return acc;
+  }
+  const next = selectAccount(pool, now, model);
+  if (next) pinSession(pool, sessionID, model, next.id);
+  return next;
+}
 function markAccountLimited(pool, id, retryAfterMs, log2, detail, model) {
-  const acc = pool.accounts.find((a) => a.id === id);
+  const acc = findAccount(pool, id);
   const until = Date.now() + (retryAfterMs ?? nextUtcMidnightMs() - Date.now());
   const name = acc?.label ?? id;
   if (acc) {
@@ -1283,10 +1370,10 @@ function mergeNativeAuth(pool, auth) {
   }
 }
 async function resolveActiveToken(pool, log2, opts = {}) {
-  let picked = selectAccount(pool, Date.now(), opts.model);
-  if (!picked && pool.accounts.some((a) => a.authFailedAt)) {
+  let picked = selectAccountForSession(pool, Date.now(), opts.model, opts.sessionID);
+  if (!picked && trackedAccounts(pool).some((a) => a.authFailedAt)) {
     await probeQuarantinedAccounts(pool, log2);
-    picked = selectAccount(pool, Date.now(), opts.model);
+    picked = selectAccountForSession(pool, Date.now(), opts.model, opts.sessionID);
   }
   if (!picked) {
     const candidates = allCandidates(pool);
@@ -1304,6 +1391,7 @@ async function resolveActiveToken(pool, log2, opts = {}) {
     if (fb && ft && fb.id !== exceptId) {
       pool.activeId = fb.id;
       fb.lastUsed = Date.now();
+      if (opts.sessionID) pinSession(pool, opts.sessionID, opts.model, fb.id);
       void savePoolFile(pool).catch(() => {
       });
       return ft;
@@ -1342,12 +1430,24 @@ var oauthOwner = (pool, access) => pool.accounts.find((a) => {
   const t = tokenOf(a);
   return !!t && sameAccount(t, access);
 });
+var mergedKeys = /* @__PURE__ */ new WeakMap();
 function mergeConnectionCredential(pool, credential) {
   if (credential?.type === "key" && "key" in credential) {
-    mergeNativeAuth(pool, { type: "api", key: credential.key });
+    const key = typeof credential.key === "string" ? credential.key.trim() : "";
+    if (!key || isRemoved(pool, key)) return;
+    const seen = mergedKeys.get(pool) ?? /* @__PURE__ */ new Set();
+    mergedKeys.set(pool, seen);
+    const raw = stripWorkOSPrefix(key);
+    if (seen.has(raw)) return;
+    seen.add(raw);
+    if (pool.accounts.some((a) => tokenOf(a) && stripWorkOSPrefix(tokenOf(a)) === raw)) return;
+    const owner2 = findOAuthDuplicate(pool, key);
+    if (owner2 && !owner2.authFailedAt) return;
+    mergeNativeAuth(pool, { type: "api", key });
     return;
   }
   if (credential?.type !== "oauth" || !("access" in credential)) return;
+  if (isRemoved(pool, credential.access)) return;
   const owner = oauthOwner(pool, credential.access);
   if (owner && (owner.expires ?? 0) >= credential.expires) return;
   const email = credential.metadata?.email;
@@ -1360,7 +1460,13 @@ function mergeConnectionCredential(pool, credential) {
   });
 }
 async function refreshViaPool(pool, credential, log2) {
-  const acc = oauthOwner(pool, credential.access) ?? upsertOAuthAccount(pool, credential);
+  const owner = oauthOwner(pool, credential.access);
+  if (!owner && isRemoved(pool, credential.access)) {
+    throw new TerminalAuthError(
+      "this Cline account was removed with cline_free_remove \u2014 disconnect it in /connect, or log in again to bring it back"
+    );
+  }
+  const acc = owner ?? upsertOAuthAccount(pool, credential);
   const fresh = typeof acc.expires === "number" && acc.expires - Date.now() >= REFRESH_BUFFER_MS;
   if (!fresh) await refreshAccount(pool, acc, log2);
   const access = tokenOf(acc);
@@ -1370,7 +1476,9 @@ async function refreshViaPool(pool, credential, log2) {
   return { access, refresh: acc.refresh, expires: acc.expires };
 }
 function tidyPool(pool) {
-  if (pruneLimits(pool) || dedupePool(pool)) void savePoolFile(pool).catch(() => {
+  const pruned = pruneLimits(pool);
+  const deduped = dedupePool(pool);
+  if (pruned || deduped) void savePoolFile(pool).catch(() => {
   });
 }
 
@@ -1413,10 +1521,12 @@ async function removeAccount(pool, id, log2) {
   if (idx === -1) return `No stored account with id ${id}.`;
   const [removed] = pool.accounts.splice(idx, 1);
   if (pool.activeId === id) delete pool.activeId;
+  const token = tokenOf(removed);
+  if (token) rememberRemoval(pool, token);
   await savePoolFile(pool).catch(() => {
   });
   log2("info", `cline-free: removed account ${removed.label ?? removed.id}`, { accountId: id });
-  return `Removed ${removed.label ?? removed.id} (${pool.accounts.length} stored left).`;
+  return `Removed ${removed.label ?? removed.id} (${pool.accounts.length} stored left). If it is also connected in /connect, disconnect it there too; until then the plugin ignores that connection. Logging in again with the same account brings it back.`;
 }
 async function addToken(pool, token, label, log2) {
   const key = token?.trim();
@@ -1430,6 +1540,7 @@ async function addToken(pool, token, label, log2) {
     return `Could not reach Cline: ${e instanceof Error ? e.message : String(e)}. Not added.`;
   }
   const email = await fetchUserEmail(key);
+  forgetRemoval(pool, key);
   const acc = upsertApiAccount(pool, key, label?.trim() || email);
   if (label?.trim()) acc.label = label.trim();
   else if (email) acc.label = email;
@@ -1440,7 +1551,8 @@ async function addToken(pool, token, label, log2) {
 }
 
 // src/core/router.ts
-function createRoutedFetch(pool, log2, baseFetch = (input, init) => globalThis.fetch(input, init)) {
+var RETRY_HEADERS_TIMEOUT_MS = 12e4;
+function createRoutedFetch(pool, log2, baseFetch = (input, init) => globalThis.fetch(input, init), opts = {}) {
   const origFetch = baseFetch;
   return (async (input, init) => {
     let url;
@@ -1484,7 +1596,8 @@ function createRoutedFetch(pool, log2, baseFetch = (input, init) => globalThis.f
     const reqModel = modelOfRequest(url, body);
     const paid = isPaidModel(reqModel);
     pruneLimits(pool, now);
-    const first = incomingToken && findByToken(pool, incomingToken) ? { token: incomingToken, accountId: findByToken(pool, incomingToken).id } : void 0;
+    const firstOwner = incomingToken ? findByToken(pool, incomingToken) : void 0;
+    const first = firstOwner ? { token: incomingToken, accountId: firstOwner.id } : void 0;
     const tried = /* @__PURE__ */ new Set();
     const refreshedInRequest = /* @__PURE__ */ new Set();
     let lastRes;
@@ -1514,10 +1627,39 @@ function createRoutedFetch(pool, log2, baseFetch = (input, init) => globalThis.f
       });
       markNoCredits(pool, id, log2, detail);
     };
+    const served = (id) => {
+      if (!id) return;
+      pool.activeId = id;
+      const acc = findAccount(pool, id);
+      if (acc) {
+        acc.lastUsed = Date.now();
+        void savePoolFile(pool).catch(() => {
+        });
+      }
+      if (opts.sessionID) pinSession(pool, opts.sessionID, reqModel, id);
+    };
+    let sends = 0;
+    const send = async (token) => {
+      const h = new Headers(headers);
+      h.set("authorization", `Bearer ${withWorkOSPrefix(token)}`);
+      if (sends++ === 0) return origFetch(url, { method, headers: h, body, signal });
+      if (signal?.aborted) throw signal.reason ?? new DOMException("The operation was aborted.", "AbortError");
+      const ctrl = new AbortController();
+      signal?.addEventListener("abort", () => ctrl.abort(signal.reason), { once: true });
+      const timer = setTimeout(
+        () => ctrl.abort(new Error(`cline-free: retry got no response within ${RETRY_HEADERS_TIMEOUT_MS / 1e3}s`)),
+        RETRY_HEADERS_TIMEOUT_MS
+      );
+      try {
+        return await origFetch(url, { method, headers: h, body, signal: ctrl.signal });
+      } finally {
+        clearTimeout(timer);
+      }
+    };
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       let token;
       let accountId;
-      const firstAcc = first ? pool.accounts.find((a) => a.id === first.accountId) : void 0;
+      const firstAcc = first ? findAccount(pool, first.accountId) : void 0;
       const firstLimited = firstAcc ? (modelLimitUntil(firstAcc, reqModel) ?? 0) > now || paid && hasNoCredits(pool, firstAcc.id) : false;
       if (attempt === 0 && first && !firstLimited) {
         ;
@@ -1542,30 +1684,15 @@ function createRoutedFetch(pool, log2, baseFetch = (input, init) => globalThis.f
       } else {
         tried.add(`raw:${stripWorkOSPrefix(token)}`);
       }
-      const h = new Headers(headers);
-      h.set("authorization", `Bearer ${withWorkOSPrefix(token)}`);
-      let res;
-      try {
-        res = await origFetch(url, { method, headers: h, body, signal });
-      } catch (e) {
-        throw e;
-      }
+      const res = await send(token);
       if (res.status === 401 || res.status === 403) {
         const snippet2 = await readSnippet(res);
         if (!isAuthFailure(res.status, snippet2)) {
-          if (accountId) {
-            pool.activeId = accountId;
-            const acc2 = pool.accounts.find((a) => a.id === accountId);
-            if (acc2) {
-              acc2.lastUsed = Date.now();
-              void savePoolFile(pool).catch(() => {
-              });
-            }
-          }
+          served(accountId);
           return res;
         }
         const detail2 = cleanDetail(snippet2);
-        let acc = accountId ? pool.accounts.find((a) => a.id === accountId) : void 0;
+        let acc = findAccount(pool, accountId);
         let staleCache = false;
         if (!acc) {
           const ukey = clineUserKey(token);
@@ -1580,10 +1707,7 @@ function createRoutedFetch(pool, log2, baseFetch = (input, init) => globalThis.f
           }
         }
         if (staleCache && acc) {
-          const current = tokenOf(acc);
-          const h2 = new Headers(headers);
-          h2.set("authorization", `Bearer ${withWorkOSPrefix(current)}`);
-          const res2 = await origFetch(url, { method, headers: h2, body, signal });
+          const res2 = await send(tokenOf(acc));
           if (outOfCredits(res2)) {
             await drain(res).catch(() => {
             });
@@ -1591,10 +1715,7 @@ function createRoutedFetch(pool, log2, baseFetch = (input, init) => globalThis.f
             continue;
           }
           if (res2.status !== 401 && res2.status !== 403 && res2.status !== 429) {
-            pool.activeId = acc.id;
-            acc.lastUsed = Date.now();
-            void savePoolFile(pool).catch(() => {
-            });
+            served(acc.id);
             log2("info", `cline-free: request recovered on ${acc.label ?? acc.id} with its current session (stale cached token)`);
             await drain(res).catch(() => {
             });
@@ -1623,9 +1744,7 @@ function createRoutedFetch(pool, log2, baseFetch = (input, init) => globalThis.f
             await refreshAccount(pool, acc, log2);
             const fresh = tokenOf(acc);
             if (fresh) {
-              const h2 = new Headers(headers);
-              h2.set("authorization", `Bearer ${withWorkOSPrefix(fresh)}`);
-              const res2 = await origFetch(url, { method, headers: h2, body, signal });
+              const res2 = await send(fresh);
               if (outOfCredits(res2)) {
                 await drain(res).catch(() => {
                 });
@@ -1633,10 +1752,7 @@ function createRoutedFetch(pool, log2, baseFetch = (input, init) => globalThis.f
                 continue;
               }
               if (res2.status !== 401 && res2.status !== 403 && res2.status !== 429) {
-                pool.activeId = acc.id;
-                acc.lastUsed = Date.now();
-                void savePoolFile(pool).catch(() => {
-                });
+                served(acc.id);
                 if (attempt > 0)
                   log2("info", `cline-free: request recovered on ${acc.label ?? acc.id} after re-auth (attempt ${attempt + 1})`);
                 else log2("info", `cline-free: request recovered on ${acc.label ?? acc.id} after silent refresh`);
@@ -1695,21 +1811,13 @@ function createRoutedFetch(pool, log2, baseFetch = (input, init) => globalThis.f
         }
         continue;
       }
-      if (outOfCredits(res) && accountId && pool.accounts.some((a) => a.id === accountId)) {
+      if (outOfCredits(res) && accountId && findAccount(pool, accountId)) {
         await parkNoCredits(res, accountId);
         continue;
       }
       if (res.status !== 429) {
-        if (accountId) {
-          pool.activeId = accountId;
-          const acc = pool.accounts.find((a) => a.id === accountId);
-          if (acc) {
-            acc.lastUsed = Date.now();
-            void savePoolFile(pool).catch(() => {
-            });
-          }
-        }
-        if (attempt > 0) log2("info", `cline-free: request recovered on ${pool.accounts.find((a) => a.id === accountId)?.label ?? "fallback account"} after 429/402/re-auth (attempt ${attempt + 1})`);
+        served(accountId);
+        if (attempt > 0) log2("info", `cline-free: request recovered on ${findAccount(pool, accountId)?.label ?? "fallback account"} after 429/402/re-auth (attempt ${attempt + 1})`);
         return res;
       }
       const snippet = await readSnippet(res);
@@ -1718,7 +1826,7 @@ function createRoutedFetch(pool, log2, baseFetch = (input, init) => globalThis.f
       });
       const retryAfter = parseRetryAfterMs(res) ?? parseRetryAfterFromBody(cleanDetail(snippet));
       const detail = cleanDetail(snippet);
-      if (accountId && pool.accounts.some((a) => a.id === accountId)) {
+      if (accountId && findAccount(pool, accountId)) {
         markAccountLimited(pool, accountId, retryAfter, log2, detail, reqModel);
       } else {
         log2("warn", `cline-free: 429 on untracked identity (${maskToken(token)})${detail ? ` \u2014 ${detail}` : ""}`);
@@ -1738,17 +1846,9 @@ function createRoutedFetch(pool, log2, baseFetch = (input, init) => globalThis.f
       const waiting = pool.accounts.filter((a) => a.limitedUntil && a.limitedUntil > Date.now()).map((a) => `${a.label ?? a.id}\u2192${new Date(a.limitedUntil).toISOString()}`).join(", ");
       log2("error", `cline-free: all ${tried.size} account(s) hit 429 daily quota. ${waiting ? `Cooling: ${waiting}. ` : ""}Add another Cline account via /connect to keep going.`);
       const resetOf = (a) => modelLimitUntil(a, reqModel) ?? a.limitedUntil ?? 0;
-      const earliest = [...pool.accounts].filter((a) => tokenOf(a)).sort((a, b) => resetOf(a) - resetOf(b))[0];
+      const earliest = allCandidates(pool).sort((a, b) => resetOf(a) - resetOf(b))[0];
       const t = earliest ? tokenOf(earliest) : void 0;
-      if (earliest && t) {
-        const h = new Headers(headers);
-        h.set("authorization", `Bearer ${withWorkOSPrefix(t)}`);
-        try {
-          return await origFetch(url, { method, headers: h, body, signal });
-        } catch (e) {
-          throw e;
-        }
-      }
+      if (earliest && t) return await send(t);
       return lastRes;
     }
     return origFetch(input, init);
@@ -1757,7 +1857,7 @@ function createRoutedFetch(pool, log2, baseFetch = (input, init) => globalThis.f
 function needsFailover(status) {
   return status === 401 || status === 402 || status === 403 || status === 429;
 }
-async function recoverResponse(pool, log2, request, response, baseFetch = (input, init) => globalThis.fetch(input, init)) {
+async function recoverResponse(pool, log2, request, response, baseFetch = (input, init) => globalThis.fetch(input, init), opts = {}) {
   if (!needsFailover(response.status) || !isRoutableUrl(request.url)) return response;
   const originalAuth = request.headers.get("authorization") ?? "";
   let reused = false;
@@ -1769,7 +1869,7 @@ async function recoverResponse(pool, log2, request, response, baseFetch = (input
     }
     return baseFetch(input, init);
   });
-  return createRoutedFetch(pool, log2, replayFetch)(request);
+  return createRoutedFetch(pool, log2, replayFetch, opts)(request);
 }
 
 // src/v2.ts
@@ -1839,6 +1939,14 @@ var oauthCredential = (methodID, creds, email) => ({
   expires: creds.expires,
   ...email ? { metadata: { email } } : {}
 });
+function credentialEmail(credential, pool) {
+  const saved = credential.metadata?.email;
+  const owner = pool?.accounts.find((a) => {
+    const t = tokenOf(a);
+    return !!t && sameAccount(t, credential.access);
+  });
+  return payloadEmail(credential.access) ?? (typeof saved === "string" && saved.includes("@") ? saved : void 0) ?? (owner ? accountEmail(owner) : void 0);
+}
 var objectSchema = (properties, required) => ({ type: "object", properties, required, additionalProperties: false });
 var text = (input, key) => {
   const value = input?.[key];
@@ -1869,6 +1977,7 @@ var setup = async (ctx) => {
     await ctx.provider.reload();
   }).catch(() => {
   });
+  let deviceLogin;
   await ctx.integration.transform((editor) => {
     editor.update(PROVIDER_ID, (integration) => {
       integration.name = "Cline Free";
@@ -1877,11 +1986,17 @@ var setup = async (ctx) => {
       integrationID: PROVIDER_ID,
       method: { id: DEVICE_METHOD, type: "oauth", label: "Cline account (free models, recommended)" },
       authorize: async () => {
+        deviceLogin?.abort();
+        const attempt = new AbortController();
+        deviceLogin = attempt;
         const device = await startDeviceAuth();
         const callback = (async () => {
-          const workos = await pollDeviceAuth(device.deviceCode, device.expiresInSeconds, device.intervalSeconds);
+          const workos = await pollDeviceAuth(device.deviceCode, device.expiresInSeconds, device.intervalSeconds, attempt.signal);
+          if (attempt.signal.aborted || disposed) throw new Error("device login was superseded by a newer login attempt");
           const creds = await registerWorkOSTokens(workos);
           const email = await fetchUserEmail(creds.access);
+          if (attempt.signal.aborted || disposed) throw new Error("device login was superseded by a newer login attempt");
+          forgetRemoval(pool, creds.access);
           const acc = upsertOAuthAccount(pool, creds, email, "oauth");
           if (email) acc.label = email;
           void savePoolFile(pool).catch(() => {
@@ -1900,9 +2015,9 @@ var setup = async (ctx) => {
       },
       refresh: async (credential) => {
         const creds = await refreshViaPool(pool, credential, log);
-        return oauthCredential(credential.methodID, creds, payloadEmail(creds.access));
+        return oauthCredential(credential.methodID, creds, credentialEmail({ ...credential, access: creds.access }, pool));
       },
-      label: (credential) => accountLabel(payloadEmail(credential.access))
+      label: (credential) => accountLabel(credentialEmail(credential, pool))
     });
     editor.method.update({
       integrationID: PROVIDER_ID,
@@ -1924,6 +2039,7 @@ var setup = async (ctx) => {
             expires = next.expires;
             if (!await validateClineToken(access)) throw new Error("Cline rejected the refreshed CLI session.");
           }
+          forgetRemoval(pool, access);
           const acc = upsertOAuthAccount(pool, { access, refresh, expires }, session.email, "cli");
           if (session.email) acc.label = session.email;
           void savePoolFile(pool).catch(() => {
@@ -1942,9 +2058,9 @@ var setup = async (ctx) => {
       },
       refresh: async (credential) => {
         const creds = await refreshViaPool(pool, credential, log);
-        return oauthCredential(credential.methodID, creds, payloadEmail(creds.access));
+        return oauthCredential(credential.methodID, creds, credentialEmail({ ...credential, access: creds.access }, pool));
       },
-      label: (credential) => accountLabel(payloadEmail(credential.access))
+      label: (credential) => accountLabel(credentialEmail(credential, pool))
     });
     editor.method.update({ integrationID: PROVIDER_ID, method: { type: "key", label: "Cline token (manual)" } });
   });
@@ -1959,7 +2075,7 @@ var setup = async (ctx) => {
       }
       const body = await Promise.resolve().then(() => event.request.clone().arrayBuffer()).catch(() => null);
       const model = modelOfRequest(event.request.url, body);
-      const token = await resolveActiveToken(pool, log, { model });
+      const token = await resolveActiveToken(pool, log, { model, sessionID: event.sessionID });
       if (token) event.request.headers.set("authorization", `Bearer ${withWorkOSPrefix(token)}`);
       event.request.headers.set("X-Task-ID", event.sessionID);
     },
@@ -1968,7 +2084,7 @@ var setup = async (ctx) => {
   await ctx.session.hook(
     "http.response",
     async (event) => {
-      event.response = await recoverResponse(pool, log, event.request, event.response);
+      event.response = await recoverResponse(pool, log, event.request, event.response, void 0, { sessionID: event.sessionID });
     },
     { providerID: PROVIDER_ID }
   );

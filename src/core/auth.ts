@@ -40,14 +40,23 @@ export async function startDeviceAuth() {
   }
 }
 
-export async function pollDeviceAuth(deviceCode: string, expiresInSeconds: number, intervalSeconds: number) {
+export async function pollDeviceAuth(deviceCode: string, expiresInSeconds: number, intervalSeconds: number, signal?: AbortSignal) {
   // Stop polling slightly before the code dies — never fire a doomed last poll.
   const deadline = Date.now() + Math.max(30, expiresInSeconds - 10) * 1000
   let interval = Math.max(1, intervalSeconds)
+  const aborted = () => new DOMException("Cline device login was cancelled.", "AbortError")
+  // Sleep between polls, waking early when the login is abandoned.
+  const wait = (ms: number) =>
+    new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, ms)
+      signal?.addEventListener("abort", () => (clearTimeout(timer), resolve()), { once: true })
+    })
   while (Date.now() <= deadline) {
+    if (signal?.aborted) throw aborted()
     let res: Response
     try {
       res = await fetchWithTimeout(`${WORKOS_API}/user_management/authenticate`, {
+        signal,
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
         body: new URLSearchParams({
@@ -60,7 +69,7 @@ export async function pollDeviceAuth(deviceCode: string, expiresInSeconds: numbe
       if (isAbortError(e)) throw e
       // Transient blip on one poll must not kill the whole flow — wait out
       // this interval and try again (bounded by the deadline above).
-      await new Promise((r) => setTimeout(r, interval * 1000))
+      await wait(interval * 1000)
       continue
     }
     const data = (await res.json().catch(() => ({}))) as {
@@ -73,12 +82,12 @@ export async function pollDeviceAuth(deviceCode: string, expiresInSeconds: numbe
       return { accessToken: data.access_token, refreshToken: data.refresh_token }
     }
     if (data.error === "authorization_pending") {
-      await new Promise((r) => setTimeout(r, interval * 1000))
+      await wait(interval * 1000)
       continue
     }
     if (data.error === "slow_down") {
       interval += 5
-      await new Promise((r) => setTimeout(r, interval * 1000))
+      await wait(interval * 1000)
       continue
     }
     if (data.error === "access_denied") {
