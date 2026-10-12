@@ -8,10 +8,12 @@ import {
   allCandidates,
   dedupePool,
   fetchUserEmail,
+  forgetRemoval,
   hasNoCredits,
   maskToken,
   poolFilePath,
   pruneLimits,
+  rememberRemoval,
   savePoolFile,
   tokenOf,
   upsertApiAccount,
@@ -66,9 +68,17 @@ export async function removeAccount(pool: PoolFile, id: string, log: Logger): Pr
   if (idx === -1) return `No stored account with id ${id}.`
   const [removed] = pool.accounts.splice(idx, 1)
   if (pool.activeId === id) delete pool.activeId
+  // Remember it, or the active /connect connection (merged before every
+  // request) and the host's token refresh would add it straight back.
+  const token = tokenOf(removed)
+  if (token) rememberRemoval(pool, token)
   await savePoolFile(pool).catch(() => {})
   log("info", `cline-free: removed account ${removed.label ?? removed.id}`, { accountId: id })
-  return `Removed ${removed.label ?? removed.id} (${pool.accounts.length} stored left).`
+  return (
+    `Removed ${removed.label ?? removed.id} (${pool.accounts.length} stored left). ` +
+    `If it is also connected in /connect, disconnect it there too; until then the plugin ignores that connection. ` +
+    `Logging in again with the same account brings it back.`
+  )
 }
 
 export async function addToken(pool: PoolFile, token: string | undefined, label: string | undefined, log: Logger): Promise<string> {
@@ -83,6 +93,7 @@ export async function addToken(pool: PoolFile, token: string | undefined, label:
     return `Could not reach Cline: ${e instanceof Error ? e.message : String(e)}. Not added.`
   }
   const email = await fetchUserEmail(key)
+  forgetRemoval(pool, key)
   const acc = upsertApiAccount(pool, key, label?.trim() || email)
   if (label?.trim()) acc.label = label.trim()
   else if (email) acc.label = email

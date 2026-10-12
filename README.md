@@ -1,6 +1,6 @@
 # opencode-cline-free
 
-**v0.8.3** · Use Cline's rotating **free models** inside OpenCode V2 with your Cline account —
+**v0.9.0** · Use Cline's rotating **free models** inside OpenCode V2 with your Cline account —
 same quota you see tagged `FREE` in Cline VSCode/CLI.
 
 **Website:** <https://itsyasirkhandev.github.io/opencode-cline-free/>
@@ -130,9 +130,13 @@ Free quota is per Cline account and resets daily. The plugin keeps a pool
 (`~/.local/share/opencode/cline-free-accounts.json`, override with
 `CLINE_FREE_ACCOUNTS_FILE`) and rotates across it:
 
-- **Loader** picks the next healthy account round-robin per request, for
-  the request's model: accounts capped on that model are skipped, and for
-  paid models so are accounts out of Cline credits.
+- **Session pinning**: each OpenCode session sticks to one account per model,
+  so the provider's prompt cache stays warm turn after turn. It moves only
+  when that account is rate limited, out of credits or needs re-login, and
+  then stays on the new account.
+- **Loader** picks a new session's account round-robin over the healthy
+  ones for the request's model: accounts capped on that model are skipped,
+  and for paid models so are accounts out of Cline credits.
 - **Per-model cooldowns**: Cline's free caps are per user **and** model, so an
   account exhausted on deepseek still has muse quota (and vice versa) and
   stays available as a fallback for the other models.
@@ -302,6 +306,7 @@ npm publish --access public
 
 | Version | Changes |
 |---|---|
+| **0.9.0** | Sessions stick to one account per model (warm prompt cache) instead of switching every turn; env-var accounts now fail over and cool down; a manual-token connection no longer resets its own NEEDS-RELOGIN flag or overwrites a fresher login; `cline_free_remove` sticks; the all-429 replay skips accounts that need re-login; connection labels keep the saved email; retries stop when a turn is cancelled; a newer device login supersedes an abandoned one |
 | **0.8.3** | When every account hits its limit on a free model, the one replay that shows Cline's real error goes to the account whose cooldown for that model ends first |
 | **0.8.2** | When every account is cooling down, the request goes to the account whose cooldown for that model ends first (it picked the last one before) |
 | **0.8.1** | Account picks are per model: an account capped on one model still serves the others, the first pick for a paid model skips $0-balance accounts, and `cline_free_status` flags them `NO-CREDITS` |

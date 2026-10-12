@@ -9,7 +9,9 @@ import {
   dedupePool,
   describeLimits,
   fetchUserEmail,
+  findOAuthDuplicate,
   isGenericLabel,
+  isRemoved,
   modelLimitUntil,
   normalizeEmailLabel,
   payloadEmail,
@@ -19,8 +21,12 @@ import {
   refreshAccount,
   sameAccount,
   savePoolFile,
+  pinSession,
   selectAccount,
+  selectAccountForSession,
+  stripWorkOSPrefix,
   tokenOf,
+  trackedAccounts,
   upsertApiAccount,
   upsertOAuthAccount,
 } from "./pool.ts"
@@ -76,6 +82,9 @@ export type ResolveOptions = {
   /** Model of the request, so the pick skips accounts capped on it (and,
    * for paid models, accounts out of credits). */
   model?: string
+  /** Session the request belongs to: it keeps using the same account (warm
+   * prompt cache) until that account can no longer serve the model. */
+  sessionID?: string
 }
 
 /** Pick the account to use for the next request and return its raw token
@@ -83,13 +92,13 @@ export type ResolveOptions = {
  * pool (activeId, lastUsed, refreshes, quarantine) exactly like the original
  * V1 loader did. */
 export async function resolveActiveToken(pool: PoolFile, log: Logger, opts: ResolveOptions = {}): Promise<string | undefined> {
-  let picked = selectAccount(pool, Date.now(), opts.model)
-  if (!picked && pool.accounts.some((a) => a.authFailedAt)) {
+  let picked = selectAccountForSession(pool, Date.now(), opts.model, opts.sessionID)
+  if (!picked && trackedAccounts(pool).some((a) => a.authFailedAt)) {
     // No healthy account, but quarantined ones exist: give the recovery
     // probes a chance before reporting exhaustion (lazy, so the hot path
     // never pays probe latency).
     await probeQuarantinedAccounts(pool, log)
-    picked = selectAccount(pool, Date.now(), opts.model)
+    picked = selectAccountForSession(pool, Date.now(), opts.model, opts.sessionID)
   }
   if (!picked) {
     const candidates = allCandidates(pool)
@@ -115,6 +124,7 @@ export async function resolveActiveToken(pool: PoolFile, log: Logger, opts: Reso
     if (fb && ft && fb.id !== exceptId) {
       pool.activeId = fb.id
       fb.lastUsed = Date.now()
+      if (opts.sessionID) pinSession(pool, opts.sessionID, opts.model, fb.id)
       void savePoolFile(pool).catch(() => {})
       return ft
     }
@@ -172,12 +182,31 @@ const oauthOwner = (pool: PoolFile, access: string): PoolAccount | undefined =>
  * of truth and rotates tokens on its own, so an OAuth credential only lands
  * when it is new to the pool or fresher than what the pool already holds:
  * a stale host copy must never overwrite a rotated refresh token. */
+// Manual-token connections already merged this run. The hook runs before
+// every request; merging the same token again would reset the account's
+// health (re-login flag, cooldowns) and could overwrite a fresher session.
+const mergedKeys = new WeakMap<PoolFile, Set<string>>()
+
 export function mergeConnectionCredential(pool: PoolFile, credential: ConnectionCredential): void {
   if (credential?.type === "key" && "key" in credential) {
-    mergeNativeAuth(pool, { type: "api", key: credential.key })
+    const key = typeof credential.key === "string" ? credential.key.trim() : ""
+    if (!key || isRemoved(pool, key)) return
+    const seen = mergedKeys.get(pool) ?? new Set<string>()
+    mergedKeys.set(pool, seen)
+    const raw = stripWorkOSPrefix(key)
+    if (seen.has(raw)) return
+    seen.add(raw)
+    // Already stored: leave its health and tokens alone.
+    if (pool.accounts.some((a) => tokenOf(a) && stripWorkOSPrefix(tokenOf(a)!) === raw)) return
+    // A pasted `workos:` token for a user who already has a working session
+    // (e.g. a device login that refreshes on its own) must not replace it.
+    const owner = findOAuthDuplicate(pool, key)
+    if (owner && !owner.authFailedAt) return
+    mergeNativeAuth(pool, { type: "api", key })
     return
   }
   if (credential?.type !== "oauth" || !("access" in credential)) return
+  if (isRemoved(pool, credential.access)) return
   const owner = oauthOwner(pool, credential.access)
   if (owner && (owner.expires ?? 0) >= credential.expires) return
   const email = credential.metadata?.email
@@ -199,7 +228,13 @@ export async function refreshViaPool(
   credential: { access: string; refresh: string; expires: number },
   log: Logger,
 ): Promise<{ access: string; refresh: string; expires: number }> {
-  const acc = oauthOwner(pool, credential.access) ?? upsertOAuthAccount(pool, credential)
+  const owner = oauthOwner(pool, credential.access)
+  if (!owner && isRemoved(pool, credential.access)) {
+    throw new TerminalAuthError(
+      "this Cline account was removed with cline_free_remove — disconnect it in /connect, or log in again to bring it back",
+    )
+  }
+  const acc = owner ?? upsertOAuthAccount(pool, credential)
   const fresh = typeof acc.expires === "number" && acc.expires - Date.now() >= REFRESH_BUFFER_MS
   if (!fresh) await refreshAccount(pool, acc, log)
   const access = tokenOf(acc)
@@ -211,5 +246,8 @@ export async function refreshViaPool(
 
 /** Housekeeping run before each selection. */
 export function tidyPool(pool: PoolFile): void {
-  if (pruneLimits(pool) || dedupePool(pool)) void savePoolFile(pool).catch(() => {})
+  // Run both: `a || b` skipped the dedupe whenever a cooldown had expired.
+  const pruned = pruneLimits(pool)
+  const deduped = dedupePool(pool)
+  if (pruned || deduped) void savePoolFile(pool).catch(() => {})
 }
