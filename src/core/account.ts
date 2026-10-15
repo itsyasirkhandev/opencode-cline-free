@@ -7,12 +7,12 @@ import {
   type PoolFile,
   allCandidates,
   dedupePool,
+  cooldownUntil,
   describeLimits,
   fetchUserEmail,
   findOAuthDuplicate,
   isGenericLabel,
   isRemoved,
-  modelLimitUntil,
   normalizeEmailLabel,
   payloadEmail,
   probeQuarantinedAccounts,
@@ -107,7 +107,7 @@ export async function resolveActiveToken(pool: PoolFile, log: Logger, opts: Reso
     // with the earliest-reset account (for the request's model when known) —
     // it selects per model (accounts limited on THIS model still block,
     // others qualify), so a 429 on glm doesn't block muse.
-    const resetOf = (a: PoolAccount) => modelLimitUntil(a, opts.model) ?? a.limitedUntil ?? 0
+    const resetOf = (a: PoolAccount) => cooldownUntil(a, opts.model)
     const earliest = [...candidates].sort((a, b) => resetOf(a) - resetOf(b))[0]
     const t = tokenOf(earliest)
     if (!t) return undefined

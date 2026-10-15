@@ -46,28 +46,74 @@ function isAbortError(e) {
 }
 async function fetchWithTimeout(url, init = {}) {
   const { timeoutMs = AUTH_TIMEOUT_MS, signal: outer, ...rest } = init;
+  outer?.throwIfAborted();
   const ctrl = new AbortController();
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    ctrl.abort();
-  }, timeoutMs);
-  const onOuterAbort = () => ctrl.abort();
-  if (outer) {
-    if (outer.aborted) {
-      clearTimeout(timer);
-      throw outer.reason ?? new DOMException("Aborted", "AbortError");
+  const timer = setTimeout(
+    () => ctrl.abort(new TransientAuthError(`request timed out after ${timeoutMs}ms: ${url}`)),
+    timeoutMs
+  );
+  const onOuterAbort = () => ctrl.abort(outer.reason);
+  outer?.addEventListener("abort", onOuterAbort, { once: true });
+  let onAbort = () => {
+  };
+  const aborted = new Promise((_, reject) => {
+    onAbort = () => reject(ctrl.signal.reason);
+    ctrl.signal.addEventListener("abort", onAbort, { once: true });
+  });
+  const consume = async () => {
+    const res = await fetch(url, { ...rest, signal: ctrl.signal });
+    if (ctrl.signal.aborted) {
+      void res.body?.cancel().catch(() => {
+      });
+      throw ctrl.signal.reason;
     }
-    outer.addEventListener("abort", onOuterAbort, { once: true });
-  }
+    const reader = res.body?.getReader();
+    const cancel = () => {
+      void reader?.cancel(ctrl.signal.reason).catch(() => {
+      });
+    };
+    ctrl.signal.addEventListener("abort", cancel, { once: true });
+    try {
+      const chunks = [];
+      let length = 0;
+      if (reader)
+        while (true) {
+          const { done, value } = await reader.read();
+          ctrl.signal.throwIfAborted();
+          if (done) break;
+          length += value.byteLength;
+          if (length > 1024 * 1024) {
+            cancel();
+            throw new TransientAuthError("authentication response exceeded 1 MiB");
+          }
+          chunks.push(value);
+        }
+      const bytes = new Uint8Array(length);
+      let offset = 0;
+      for (const chunk of chunks) {
+        bytes.set(chunk, offset);
+        offset += chunk.length;
+      }
+      const buffered = new Response(res.body ? bytes : null, {
+        status: res.status,
+        statusText: res.statusText,
+        headers: res.headers
+      });
+      for (const key of ["url", "redirected", "type"]) {
+        Object.defineProperty(buffered, key, { value: res[key] });
+      }
+      return buffered;
+    } finally {
+      ctrl.signal.removeEventListener("abort", cancel);
+      reader?.releaseLock();
+    }
+  };
   try {
-    return await fetch(url, { ...rest, signal: ctrl.signal });
-  } catch (e) {
-    if (timedOut) throw new TransientAuthError(`request timed out after ${timeoutMs}ms: ${url}`);
-    throw e;
+    return await Promise.race([consume(), aborted]);
   } finally {
     clearTimeout(timer);
     outer?.removeEventListener("abort", onOuterAbort);
+    ctrl.signal.removeEventListener("abort", onAbort);
   }
 }
 function parseOAuthErrorCode(body) {
@@ -86,7 +132,9 @@ function classifyHttpFailure(status, code, where, detail) {
     return new TransientAuthError(`${where}: HTTP ${status}${code ? ` (${code})` : ""}${extra}`);
   }
   if (status !== void 0 && status >= 400) {
-    return new TerminalAuthError(`${where}: HTTP ${status}${code ? ` (${code})` : ""}${extra} \u2014 retrying is unlikely to help`);
+    return new TerminalAuthError(
+      `${where}: HTTP ${status}${code ? ` (${code})` : ""}${extra} \u2014 retrying is unlikely to help`
+    );
   }
   return new TransientAuthError(`${where}${extra}`);
 }
@@ -94,10 +142,12 @@ async function withTransientRetries(fn, opts = {}) {
   const attempts = opts.attempts ?? TRANSIENT_MAX_ATTEMPTS;
   let last;
   for (let attempt = 0; attempt < attempts; attempt++) {
+    opts.signal?.throwIfAborted();
     try {
       return await fn();
     } catch (e) {
-      if (e instanceof TerminalAuthError) throw e;
+      opts.signal?.throwIfAborted();
+      if (e instanceof TerminalAuthError || isAbortError(e)) throw e;
       last = e;
       if (attempt === attempts - 1) break;
       const wait = TRANSIENT_BACKOFF_MS[Math.min(attempt, TRANSIENT_BACKOFF_MS.length - 1)] + Math.random() * 250;
@@ -105,7 +155,20 @@ async function withTransientRetries(fn, opts = {}) {
         "warn",
         `cline-free: attempt ${attempt + 1}/${attempts} failed${opts.label ? ` for ${opts.label}` : ""} (${e instanceof Error ? e.message : String(e)}) \u2014 retrying in ${Math.round(wait)}ms`
       );
-      await sleep(wait);
+      await new Promise((resolve, reject) => {
+        const cleanup = () => opts.signal?.removeEventListener("abort", cancel);
+        const timer = setTimeout(() => {
+          cleanup();
+          resolve();
+        }, wait);
+        const cancel = () => {
+          clearTimeout(timer);
+          cleanup();
+          reject(opts.signal.reason);
+        };
+        opts.signal?.addEventListener("abort", cancel, { once: true });
+        if (opts.signal?.aborted) cancel();
+      });
     }
   }
   if (last instanceof TerminalAuthError) throw last;
@@ -113,40 +176,49 @@ async function withTransientRetries(fn, opts = {}) {
 }
 
 // src/core/auth.ts
-async function startDeviceAuth() {
-  const res = await withTransientRetries(
-    () => fetchWithTimeout(`${WORKOS_API}/user_management/authorize/device`, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
-      body: new URLSearchParams({ client_id: WORKOS_CLIENT_ID })
-    }),
-    { attempts: 2, label: "device authorization" }
+async function startDeviceAuth(signal) {
+  return withTransientRetries(
+    async () => {
+      const res = await fetchWithTimeout(`${WORKOS_API}/user_management/authorize/device`, {
+        signal,
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+        body: new URLSearchParams({ client_id: WORKOS_CLIENT_ID })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.device_code || !data.user_code || !data.verification_uri) {
+        throw classifyHttpFailure(
+          res.ok ? void 0 : res.status,
+          parseOAuthErrorCode(data),
+          "Cline device authorization",
+          data.error_description ?? (typeof data.error === "string" ? data.error : void 0) ?? res.statusText
+        );
+      }
+      return {
+        deviceCode: data.device_code,
+        userCode: data.user_code,
+        verificationUri: data.verification_uri,
+        verificationUriComplete: data.verification_uri_complete,
+        expiresInSeconds: data.expires_in ?? 300,
+        intervalSeconds: data.interval ?? 5
+      };
+    },
+    { attempts: 2, label: "device authorization", signal }
   );
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok || !data.device_code || !data.user_code || !data.verification_uri) {
-    throw classifyHttpFailure(
-      res.ok ? void 0 : res.status,
-      parseOAuthErrorCode(data),
-      "Cline device authorization",
-      data.error_description ?? (typeof data.error === "string" ? data.error : void 0) ?? res.statusText
-    );
-  }
-  return {
-    deviceCode: data.device_code,
-    userCode: data.user_code,
-    verificationUri: data.verification_uri,
-    verificationUriComplete: data.verification_uri_complete,
-    expiresInSeconds: data.expires_in ?? 300,
-    intervalSeconds: data.interval ?? 5
-  };
 }
 async function pollDeviceAuth(deviceCode, expiresInSeconds, intervalSeconds, signal) {
   const deadline = Date.now() + Math.max(30, expiresInSeconds - 10) * 1e3;
   let interval = Math.max(1, intervalSeconds);
   const aborted = () => new DOMException("Cline device login was cancelled.", "AbortError");
   const wait = (ms) => new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    signal?.addEventListener("abort", () => (clearTimeout(timer), resolve()), { once: true });
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener("abort", done, { once: true });
+    if (signal?.aborted) done();
   });
   while (Date.now() <= deadline) {
     if (signal?.aborted) throw aborted();
@@ -163,6 +235,7 @@ async function pollDeviceAuth(deviceCode, expiresInSeconds, intervalSeconds, sig
         })
       });
     } catch (e) {
+      if (signal?.aborted) throw aborted();
       if (isAbortError(e)) throw e;
       await wait(interval * 1e3);
       continue;
@@ -529,7 +602,7 @@ function modelConfig(entry, auto) {
 }
 
 // src/core/pool.ts
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 function modelOfRequest(url, body) {
   if (!body || !url.includes("/chat/completions")) return void 0;
   try {
@@ -659,7 +732,12 @@ function parseRetryAfterFromBody(detail) {
   return total;
 }
 function isRoutableUrl(url) {
-  return url.startsWith(API_BASE) && (url.includes("/chat/completions") || url.includes("/completions"));
+  try {
+    const parsed = new URL(url);
+    return parsed.origin === API_BASE && !parsed.username && !parsed.password && /^\/api\/v1\/(?:chat\/)?completions\/?$/.test(parsed.pathname);
+  } catch {
+    return false;
+  }
 }
 function isAuthFailure(status, snippet) {
   if (status === 401) return true;
@@ -668,94 +746,259 @@ function isAuthFailure(status, snippet) {
     snippet
   );
 }
-async function loadPoolFile() {
+var baselines = /* @__PURE__ */ new WeakMap();
+var revivals = /* @__PURE__ */ new WeakMap();
+var copy = (value) => structuredClone(value);
+var equal = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+var emptyPool = () => ({ version: 1, accounts: [] });
+async function readPoolFile(file) {
+  const { readFile } = await import("node:fs/promises");
+  let raw;
   try {
-    const { readFile } = await import("node:fs/promises");
-    const raw = await readFile(poolFilePath(), "utf8");
-    const data = JSON.parse(raw);
-    const accounts = Array.isArray(data.accounts) ? data.accounts.filter(
-      (a) => !!a && typeof a.id === "string" && (typeof a.access === "string" || typeof a.apiKey === "string")
-    ) : [];
-    const removed = Array.isArray(data.removed) ? data.removed.filter((r) => typeof r === "string") : [];
-    return {
-      version: 1,
-      activeId: typeof data.activeId === "string" ? data.activeId : void 0,
-      accounts,
-      ...removed.length > 0 ? { removed } : {}
-    };
-  } catch {
-    return { version: 1, accounts: [] };
+    raw = await readFile(file, "utf8");
+  } catch (e) {
+    if (e.code === "ENOENT") return emptyPool();
+    throw e;
   }
+  const data = JSON.parse(raw);
+  const accounts = Array.isArray(data.accounts) ? data.accounts.filter(
+    (a) => !!a && typeof a.id === "string" && (typeof a.access === "string" || typeof a.apiKey === "string")
+  ) : [];
+  for (const a of accounts) migrateLimits(a);
+  const removed = Array.isArray(data.removed) ? data.removed.filter((r) => typeof r === "string") : [];
+  return {
+    version: 1,
+    activeId: typeof data.activeId === "string" ? data.activeId : void 0,
+    accounts,
+    ...removed.length ? { removed } : {}
+  };
 }
-async function savePoolFile(pool) {
-  const { mkdir, writeFile, chmod, rename, unlink } = await import("node:fs/promises");
-  const { dirname } = await import("node:path");
-  const file = poolFilePath();
-  await mkdir(dirname(file), { recursive: true });
-  const tmp = `${file}.tmp.${process.pid}.${Date.now()}`;
+async function loadPoolFile() {
+  let pool;
   try {
-    await writeFile(tmp, JSON.stringify(pool, null, 2), { mode: 384 });
-    await chmod(tmp, 384).catch(() => {
-    });
+    pool = await readPoolFile(poolFilePath());
+  } catch {
+    pool = emptyPool();
+  }
+  baselines.set(pool, copy(pool));
+  return pool;
+}
+var credentialKeys = ["access", "apiKey", "refresh", "expires"];
+var healthKeys = /* @__PURE__ */ new Set([
+  "limitedUntil",
+  "modelLimits",
+  "lastError",
+  "authFailedAt",
+  "authFailedReason",
+  "lastProbeAt"
+]);
+var credentials = (a) => credentialKeys.map((k) => a[k]);
+function mergeAccount(base, local, disk) {
+  const result = copy(disk);
+  const peerRotated = !equal(credentials(base), credentials(disk));
+  if (!peerRotated && !equal(credentials(base), credentials(local))) {
+    for (const k of credentialKeys) {
+      if (local[k] === void 0) delete result[k];
+      else result[k] = local[k];
+    }
+  }
+  for (const k of /* @__PURE__ */ new Set([...Object.keys(base), ...Object.keys(local)])) {
+    if (credentialKeys.includes(k) || k === "id") continue;
+    if (peerRotated && healthKeys.has(k)) continue;
+    const b = base[k];
+    const l = local[k];
+    if (equal(b, l)) continue;
+    if (k === "modelLimits") {
+      const merged = { ...disk.modelLimits };
+      for (const m of /* @__PURE__ */ new Set([...Object.keys(base.modelLimits ?? {}), ...Object.keys(local.modelLimits ?? {})])) {
+        const before = base.modelLimits?.[m], after = local.modelLimits?.[m];
+        if (before === after) continue;
+        if (after !== void 0) merged[m] = Math.max(merged[m] ?? 0, after);
+        else if (merged[m] === before) delete merged[m];
+      }
+      if (Object.keys(merged).length) result.modelLimits = merged;
+      else delete result.modelLimits;
+    } else if (l === void 0) {
+      if (equal(disk[k], b)) delete result[k];
+    } else if (k === "lastUsed" || k === "limitedUntil") {
+      ;
+      result[k] = Math.max(Number(disk[k]) || 0, Number(l));
+    } else {
+      ;
+      result[k] = copy(l);
+    }
+  }
+  return result;
+}
+function mergePool(base, local, disk, revived = /* @__PURE__ */ new Set()) {
+  const result = copy(disk);
+  const removed = new Set(disk.removed);
+  for (const r of base.removed ?? []) if (!local.removed?.includes(r)) removed.delete(r);
+  for (const r of revived) removed.delete(r);
+  for (const r of local.removed ?? []) if (!base.removed?.includes(r)) removed.add(r);
+  result.removed = [...removed].slice(-MAX_REMOVED);
+  if (!result.removed.length) delete result.removed;
+  const before = new Map(base.accounts.map((a) => [a.id, a]));
+  const after = new Map(local.accounts.map((a) => [a.id, a]));
+  result.accounts = result.accounts.filter((a) => !(before.has(a.id) && !after.has(a.id)));
+  for (const a of local.accounts) {
+    const old = before.get(a.id);
+    const idx = result.accounts.findIndex((d) => d.id === a.id);
+    if (old) {
+      if (idx >= 0) result.accounts[idx] = mergeAccount(old, a, result.accounts[idx]);
+      else if (revived.has(identityHash(tokenOf(a) ?? ""))) result.accounts.push(copy(a));
+    } else if (idx < 0) {
+      const token = tokenOf(a);
+      if (!token || !removed.has(identityHash(token))) result.accounts.push(copy(a));
+    }
+  }
+  result.accounts = result.accounts.filter((a) => !isRemoved(result, tokenOf(a) ?? ""));
+  if (local.activeId !== base.activeId) result.activeId = local.activeId;
+  if (!result.accounts.some((a) => a.id === result.activeId)) result.activeId = result.accounts[0]?.id;
+  return result;
+}
+function adoptPool(pool, next) {
+  const existing = new Map(pool.accounts.map((a) => [a.id, a]));
+  pool.accounts = next.accounts.map((a) => {
+    const current = existing.get(a.id);
+    if (!current) return a;
+    for (const k of Object.keys(current)) delete current[k];
+    Object.assign(current, a);
+    return current;
+  });
+  pool.activeId = next.activeId;
+  if (next.removed) pool.removed = next.removed;
+  else delete pool.removed;
+}
+async function persistPoolFile(pool, file) {
+  const { writeFile, chmod, rename, unlink } = await import("node:fs/promises");
+  const base = baselines.get(pool) ?? emptyPool();
+  const snapshot = copy(pool);
+  const revived = new Set(revivals.get(pool));
+  const merged = mergePool(base, snapshot, await readPoolFile(file), revived);
+  const tmp = `${file}.tmp.${process.pid}.${randomUUID()}`;
+  try {
+    await writeFile(tmp, JSON.stringify(merged, null, 2), { mode: 384, flag: "wx" });
+    await chmod(tmp, 384);
     await rename(tmp, file);
   } catch (e) {
     await unlink(tmp).catch(() => {
     });
     throw e;
   }
+  adoptPool(pool, mergePool(snapshot, pool, merged, new Set(revivals.get(pool))));
+  baselines.set(pool, copy(merged));
+  for (const r of revived) revivals.get(pool)?.delete(r);
 }
-async function withFileLock(fn, opts = {}) {
-  const { open, unlink, stat, utimes } = await import("node:fs/promises");
-  const lock = `${poolFilePath()}.lock`;
-  const timeoutMs = opts.timeoutMs ?? 5e3;
+async function savePoolFile(pool) {
+  const file = poolFilePath();
+  await lockPoolFile(file, () => persistPoolFile(pool, file));
+}
+async function lockPoolFile(file, fn, opts = {}) {
+  const { mkdir, open, rename, unlink, rmdir, stat, readFile, readdir } = await import("node:fs/promises");
+  const { dirname } = await import("node:path");
+  await mkdir(dirname(file), { recursive: true });
+  const lock = `${file}.lock`;
+  const ownerName = `owner-${process.pid}-${randomUUID()}`;
+  const candidate = `${lock}.${ownerName}`;
+  const timeoutMs = opts.timeoutMs ?? 12e4;
   const staleMs = opts.staleMs ?? 15e3;
   const start = Date.now();
-  while (true) {
+  const dead = (pid) => {
+    if (!Number.isInteger(pid) || pid <= 0) return false;
     try {
-      const fh = await open(lock, "wx", 384);
-      await fh.writeFile(`${process.pid}`).catch(() => {
-      });
-      await fh.close().catch(() => {
-      });
-      break;
+      process.kill(pid, 0);
+      return false;
     } catch (e) {
-      if (e?.code !== "EEXIST") throw e;
-      try {
-        const st = await stat(lock);
-        if (Date.now() - st.mtimeMs > staleMs) {
-          await unlink(lock).catch(() => {
-          });
-          continue;
-        }
-      } catch {
-        continue;
-      }
-      if (Date.now() - start > timeoutMs) {
-        throw new TransientAuthError(`timed out waiting for pool lock (${lock})`);
-      }
-      await sleep(50 + Math.random() * 100);
+      return e.code === "ESRCH";
     }
-  }
-  const beat = setInterval(() => {
-    const now = /* @__PURE__ */ new Date();
-    void utimes(lock, now, now).catch(() => {
+  };
+  await mkdir(candidate, { mode: 448 });
+  const owner = await open(`${candidate}/${ownerName}`, "wx", 384).catch(async (e) => {
+    await rmdir(candidate).catch(() => {
     });
-  }, Math.max(250, Math.floor(staleMs / 3)));
-  beat.unref?.();
+    throw e;
+  });
+  let beat;
+  let acquired = false;
   try {
+    await owner.writeFile(`${process.pid}`);
+    while (true) {
+      try {
+        await rename(candidate, lock);
+        acquired = true;
+        break;
+      } catch (e) {
+        if (!["EEXIST", "ENOTEMPTY", "ENOTDIR", "EISDIR"].includes(e.code ?? "")) throw e;
+        try {
+          const st = await stat(lock);
+          if (st.isDirectory()) {
+            const names = await readdir(lock);
+            for (const name of names) {
+              if (!/^owner-\d+-[\da-f-]+$/.test(name)) continue;
+              const path = `${lock}/${name}`;
+              const ownerStat = await stat(path);
+              const pid = Number(await readFile(path, "utf8"));
+              if (dead(pid) && Date.now() - ownerStat.mtimeMs > staleMs) await unlink(path).catch(() => {
+              });
+            }
+            await rmdir(lock).catch(() => {
+            });
+          } else if (Date.now() - st.mtimeMs > staleMs && dead(Number(await readFile(lock, "utf8")))) {
+            await unlink(lock).catch(() => {
+            });
+          }
+        } catch {
+        }
+        if (Date.now() - start > timeoutMs) throw new TransientAuthError(`timed out waiting for pool lock (${lock})`);
+        await sleep(50 + Math.random() * 100);
+      }
+    }
+    beat = setInterval(
+      () => {
+        const now = /* @__PURE__ */ new Date();
+        void owner.utimes(now, now).catch(() => {
+        });
+      },
+      Math.max(10, Math.floor(staleMs / 3))
+    );
+    beat.unref();
     return await fn();
   } finally {
-    clearInterval(beat);
-    await unlink(lock).catch(() => {
-    });
+    if (beat) clearInterval(beat);
+    await owner.close();
+    if (acquired) {
+      await unlink(`${lock}/${ownerName}`).catch(() => {
+      });
+      await rmdir(lock).catch(() => {
+      });
+    } else {
+      await unlink(`${candidate}/${ownerName}`).catch(() => {
+      });
+      await rmdir(candidate).catch(() => {
+      });
+    }
   }
+}
+function migrateLimits(a) {
+  if (a.limitsVersion === 2) return;
+  const maxModel = Math.max(0, ...Object.values(a.modelLimits ?? {}));
+  if (maxModel && a.limitedUntil === maxModel) delete a.limitedUntil;
+  a.limitsVersion = 2;
+}
+function cooldownUntil(a, model) {
+  migrateLimits(a);
+  return Math.max(
+    a.limitedUntil ?? 0,
+    model ? modelLimitUntil(a, model) ?? 0 : Math.max(0, ...Object.values(a.modelLimits ?? {}))
+  );
 }
 function pruneLimits(pool, now = Date.now()) {
   let changed = false;
   for (const a of trackedAccounts(pool)) {
+    migrateLimits(a);
     if (a.limitedUntil && a.limitedUntil <= now) {
       delete a.limitedUntil;
-      delete a.lastError;
       changed = true;
     }
     if (a.modelLimits) {
@@ -766,6 +1009,10 @@ function pruneLimits(pool, now = Date.now()) {
         }
       }
       if (Object.keys(a.modelLimits).length === 0) delete a.modelLimits;
+    }
+    if (!a.limitedUntil && !a.modelLimits && a.lastError?.startsWith("429")) {
+      delete a.lastError;
+      changed = true;
     }
   }
   return changed;
@@ -840,7 +1087,7 @@ function allCandidates(pool) {
     if (ukey && seenUser.has(ukey)) return;
     if (ukey) seenUser.add(ukey);
     seenToken.add(k);
-    const fp = `${k.slice(0, 4)}${k.slice(-4)}${k.length}`;
+    const fp = createHash("sha256").update(k).digest("hex");
     const acc = envAccount(
       pool,
       `env-${fp}`,
@@ -951,6 +1198,8 @@ async function fetchUserEmail(accessToken) {
   }
 }
 function clearAuthHealth(acc) {
+  acc.limitsVersion = 2;
+  delete acc.modelLimits;
   delete acc.limitedUntil;
   delete acc.lastError;
   delete acc.authFailedAt;
@@ -1030,14 +1279,21 @@ function rememberRemoval(pool, token) {
   pool.removed = list.slice(-MAX_REMOVED);
 }
 function forgetRemoval(pool, token) {
-  if (!pool.removed) return;
   const id = identityHash(token);
+  const revived = revivals.get(pool) ?? /* @__PURE__ */ new Set();
+  revived.add(id);
+  revivals.set(pool, revived);
+  if (!pool.removed) return;
   pool.removed = pool.removed.filter((r) => r !== id);
   if (pool.removed.length === 0) delete pool.removed;
 }
-var refreshFlight = /* @__PURE__ */ new Map();
+var refreshFlights = /* @__PURE__ */ new WeakMap();
 async function refreshAccount(pool, acc, log2) {
-  const inflight = refreshFlight.get(acc.id);
+  const file = poolFilePath();
+  const flightKey = `${file}\0${acc.id}`;
+  const refreshFlight = refreshFlights.get(pool) ?? /* @__PURE__ */ new Map();
+  refreshFlights.set(pool, refreshFlight);
+  const inflight = refreshFlight.get(flightKey);
   if (inflight) {
     await inflight;
     return;
@@ -1045,14 +1301,23 @@ async function refreshAccount(pool, acc, log2) {
   const p = (async () => {
     const refreshToken = acc.refresh;
     if (!refreshToken) {
-      throw new TerminalAuthError(`account ${acc.label ?? acc.id} has no refresh token \u2014 re-login required (/connect \u2192 cline-free)`);
+      throw new TerminalAuthError(
+        `account ${acc.label ?? acc.id} has no refresh token \u2014 re-login required (/connect \u2192 cline-free)`
+      );
     }
-    await withFileLock(async () => {
-      const disk = await loadPoolFile();
+    await lockPoolFile(file, async () => {
+      const disk = await readPoolFile(file);
       const peer = disk.accounts.find((a) => a.id === acc.id);
+      if (!peer && baselines.get(pool)?.accounts.some((a) => a.id === acc.id) || tokenOf(acc) && isRemoved(disk, tokenOf(acc))) {
+        adoptPool(pool, disk);
+        baselines.set(pool, copy(disk));
+        throw new TerminalAuthError("account removed by another process \u2014 re-login required");
+      }
+      const observed = baselines.get(pool)?.accounts.find((a) => a.id === acc.id);
+      const peerChanged = !!peer && (!observed || !equal(credentials(peer), credentials(observed)));
       const peerTok = peer ? tokenOf(peer) : void 0;
       const mine = tokenOf(acc);
-      if (peer?.refresh && peer?.expires && peer.expires - Date.now() >= REFRESH_BUFFER_MS && peerTok && mine && stripWorkOSPrefix(peerTok) !== stripWorkOSPrefix(mine)) {
+      if (peerChanged && peer?.refresh && peer?.expires && peer.expires - Date.now() >= REFRESH_BUFFER_MS && peerTok && mine && (stripWorkOSPrefix(peerTok) !== stripWorkOSPrefix(mine) || peer.refresh !== refreshToken)) {
         acc.access = peer.access;
         acc.apiKey = peer.apiKey;
         acc.refresh = peer.refresh;
@@ -1061,19 +1326,31 @@ async function refreshAccount(pool, acc, log2) {
         log2("info", `cline-free: adopted peer-refreshed tokens for ${acc.label ?? acc.id}`);
         return;
       }
-      const next = await refreshClineToken(refreshToken, { label: acc.label ?? acc.id, log: log2 });
+      const next = await refreshClineToken(peerChanged ? peer?.refresh ?? refreshToken : refreshToken, {
+        label: acc.label ?? acc.id,
+        log: log2
+      });
       acc.access = next.access;
       acc.refresh = next.refresh;
       acc.expires = next.expires;
       clearAuthHealth(acc);
-      await savePoolFile(pool);
+      const baseline = copy(baselines.get(pool) ?? emptyPool());
+      const idx = baseline.accounts.findIndex((a) => a.id === acc.id);
+      if (peer && idx >= 0) {
+        for (const k of credentialKeys) {
+          if (peer[k] === void 0) delete baseline.accounts[idx][k];
+          else baseline.accounts[idx][k] = peer[k];
+        }
+      } else if (peer) baseline.accounts.push(copy(peer));
+      baselines.set(pool, baseline);
+      await persistPoolFile(pool, file);
     });
   })();
-  refreshFlight.set(acc.id, p);
+  refreshFlight.set(flightKey, p);
   try {
     await p;
   } finally {
-    refreshFlight.delete(acc.id);
+    refreshFlight.delete(flightKey);
   }
 }
 function quarantineAccount(pool, acc, reason, log2) {
@@ -1131,17 +1408,12 @@ function markNoCredits(pool, id, log2, detail) {
     { accountId: id }
   );
 }
-function accountWideLimited(a, now, model) {
-  if (!a.limitedUntil || a.limitedUntil <= now) return false;
-  if (!model || !a.modelLimits) return true;
-  const until = a.limitedUntil;
-  return !Object.values(a.modelLimits).some((u) => u >= until);
-}
 function isAvailable(pool, a, now, model) {
   if (isPaidModel(model) && hasNoCredits(pool, a.id)) return false;
   const until = modelLimitUntil(a, model);
   if (until && until > now) return false;
-  return !accountWideLimited(a, now, model);
+  migrateLimits(a);
+  return !a.limitedUntil || a.limitedUntil <= now;
 }
 function selectAccount(pool, now = Date.now(), model) {
   const candidates = allCandidates(pool);
@@ -1186,12 +1458,12 @@ function markAccountLimited(pool, id, retryAfterMs, log2, detail, model) {
   const until = Date.now() + (retryAfterMs ?? nextUtcMidnightMs() - Date.now());
   const name = acc?.label ?? id;
   if (acc) {
+    migrateLimits(acc);
     if (model) {
       acc.modelLimits ??= {};
       acc.modelLimits[model] = until;
-      if (!acc.limitedUntil || acc.limitedUntil < until) acc.limitedUntil = until;
     } else {
-      acc.limitedUntil = until;
+      acc.limitedUntil = Math.max(acc.limitedUntil ?? 0, until);
     }
     acc.lastError = `429${detail ? `: ${detail}` : ""}`;
   }
@@ -1204,9 +1476,9 @@ function markAccountLimited(pool, id, retryAfterMs, log2, detail, model) {
   });
 }
 function describeLimits(pool) {
-  const limited = pool.accounts.filter((a) => a.limitedUntil && a.limitedUntil > Date.now());
+  const limited = pool.accounts.filter((a) => cooldownUntil(a) > Date.now());
   if (limited.length === 0) return "";
-  return ` Limited: ${limited.map((a) => `${a.label ?? a.id}\u2192${new Date(a.limitedUntil).toISOString()}`).join(", ")}.`;
+  return ` Limited: ${limited.map((a) => `${a.label ?? a.id}\u2192${new Date(cooldownUntil(a)).toISOString()}`).join(", ")}.`;
 }
 
 // src/core/modelList.ts
@@ -1378,7 +1650,7 @@ async function resolveActiveToken(pool, log2, opts = {}) {
   if (!picked) {
     const candidates = allCandidates(pool);
     if (candidates.length === 0) return void 0;
-    const resetOf = (a) => modelLimitUntil(a, opts.model) ?? a.limitedUntil ?? 0;
+    const resetOf = (a) => cooldownUntil(a, opts.model);
     const earliest = [...candidates].sort((a, b) => resetOf(a) - resetOf(b))[0];
     const t = tokenOf(earliest);
     if (!t) return void 0;
@@ -1562,34 +1834,71 @@ function createRoutedFetch(pool, log2, baseFetch = (input, init) => globalThis.f
       return origFetch(input, init);
     }
     if (!isRoutableUrl(url)) return origFetch(input, init);
-    let method = "POST";
-    let headers = new Headers();
+    if (init?.body instanceof ReadableStream) return origFetch(input, init);
+    const request = new Request(input, init);
+    const method = request.method;
+    const headers = new Headers(request.headers);
+    const signal = request.signal;
+    signal.throwIfAborted();
     let body = null;
-    let signal;
-    try {
-      if (typeof input === "string" || input instanceof URL) {
-        method = init?.method ?? "POST";
-        headers = new Headers(init?.headers);
-        signal = init?.signal;
-        const b = init?.body;
-        if (typeof b === "string") body = new TextEncoder().encode(b).buffer;
-        else if (b instanceof ArrayBuffer) body = b;
-        else if (ArrayBuffer.isView(b)) body = b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
-        else if (b != null) {
-          return origFetch(input, init);
-        }
-      } else {
-        const req = input;
-        method = req.method ?? init?.method ?? "POST";
-        headers = new Headers(req.headers);
-        for (const [k, v] of new Headers(init?.headers ?? {})) headers.set(k, v);
-        signal = init?.signal ?? req.signal;
-        const buf = await req.clone().arrayBuffer().catch(() => null);
-        body = buf && buf.byteLength > 0 ? buf : null;
+    if (request.body) {
+      const reader = request.body.getReader();
+      let onAbort = () => {
+      };
+      const aborted = new Promise((_, reject) => {
+        onAbort = () => {
+          reject(signal.reason);
+          void reader.cancel(signal.reason).catch(() => {
+          });
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+        if (signal.aborted) onAbort();
+      });
+      try {
+        body = await Promise.race([
+          (async () => {
+            try {
+              const chunks = [];
+              let length = 0;
+              while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                chunks.push(value);
+                length += value.byteLength;
+              }
+              const bytes = new Uint8Array(length);
+              let offset = 0;
+              for (const chunk of chunks) {
+                bytes.set(chunk, offset);
+                offset += chunk.length;
+              }
+              return bytes.buffer;
+            } finally {
+              reader.releaseLock();
+            }
+          })(),
+          aborted
+        ]);
+      } finally {
+        signal.removeEventListener("abort", onAbort);
       }
-    } catch {
-      return origFetch(input, init);
     }
+    signal.throwIfAborted();
+    const replayInit = {
+      ...init,
+      method,
+      headers,
+      body,
+      signal,
+      cache: request.cache,
+      credentials: request.credentials,
+      integrity: request.integrity,
+      keepalive: request.keepalive,
+      mode: request.mode,
+      redirect: request.redirect,
+      referrer: request.referrer,
+      referrerPolicy: request.referrerPolicy
+    };
     const incomingAuth = headers.get("authorization") ?? "";
     const incomingToken = incomingAuth.replace(/^bearer\s+/i, "");
     const now = Date.now();
@@ -1640,18 +1949,18 @@ function createRoutedFetch(pool, log2, baseFetch = (input, init) => globalThis.f
     };
     let sends = 0;
     const send = async (token) => {
+      signal.throwIfAborted();
       const h = new Headers(headers);
-      h.set("authorization", `Bearer ${withWorkOSPrefix(token)}`);
-      if (sends++ === 0) return origFetch(url, { method, headers: h, body, signal });
-      if (signal?.aborted) throw signal.reason ?? new DOMException("The operation was aborted.", "AbortError");
+      if (token) h.set("authorization", `Bearer ${withWorkOSPrefix(token)}`);
+      const sendInit = { ...replayInit, headers: h, body: body?.slice(0) ?? null };
+      if (sends++ === 0) return origFetch(url, sendInit);
       const ctrl = new AbortController();
-      signal?.addEventListener("abort", () => ctrl.abort(signal.reason), { once: true });
       const timer = setTimeout(
         () => ctrl.abort(new Error(`cline-free: retry got no response within ${RETRY_HEADERS_TIMEOUT_MS / 1e3}s`)),
         RETRY_HEADERS_TIMEOUT_MS
       );
       try {
-        return await origFetch(url, { method, headers: h, body, signal: ctrl.signal });
+        return await origFetch(url, { ...sendInit, signal: AbortSignal.any([signal, ctrl.signal]) });
       } finally {
         clearTimeout(timer);
       }
@@ -1660,7 +1969,7 @@ function createRoutedFetch(pool, log2, baseFetch = (input, init) => globalThis.f
       let token;
       let accountId;
       const firstAcc = first ? findAccount(pool, first.accountId) : void 0;
-      const firstLimited = firstAcc ? (modelLimitUntil(firstAcc, reqModel) ?? 0) > now || paid && hasNoCredits(pool, firstAcc.id) : false;
+      const firstLimited = firstAcc ? !isAvailable(pool, firstAcc, now, reqModel) || !!firstAcc.authFailedAt : false;
       if (attempt === 0 && first && !firstLimited) {
         ;
         ({ token, accountId } = first);
@@ -1703,7 +2012,10 @@ function createRoutedFetch(pool, log2, baseFetch = (input, init) => globalThis.f
             staleCache = true;
             accountId = owner.id;
             acc = owner;
-            log2("info", `cline-free: stale cached token (${maskToken(token)}) matched to ${owner.label ?? owner.id} by user key \u2014 replaying with its current session`);
+            log2(
+              "info",
+              `cline-free: stale cached token (${maskToken(token)}) matched to ${owner.label ?? owner.id} by user key \u2014 replaying with its current session`
+            );
           }
         }
         if (staleCache && acc) {
@@ -1716,7 +2028,10 @@ function createRoutedFetch(pool, log2, baseFetch = (input, init) => globalThis.f
           }
           if (res2.status !== 401 && res2.status !== 403 && res2.status !== 429) {
             served(acc.id);
-            log2("info", `cline-free: request recovered on ${acc.label ?? acc.id} with its current session (stale cached token)`);
+            log2(
+              "info",
+              `cline-free: request recovered on ${acc.label ?? acc.id} with its current session (stale cached token)`
+            );
             await drain(res).catch(() => {
             });
             return res2;
@@ -1729,7 +2044,14 @@ function createRoutedFetch(pool, log2, baseFetch = (input, init) => globalThis.f
             });
             await drain(res2).catch(() => {
             });
-            markAccountLimited(pool, acc.id, parseRetryAfterMs(res2) ?? parseRetryAfterFromBody(detail22), log2, detail22, reqModel);
+            markAccountLimited(
+              pool,
+              acc.id,
+              parseRetryAfterMs(res2) ?? parseRetryAfterFromBody(detail22),
+              log2,
+              detail22,
+              reqModel
+            );
             continue;
           }
           lastAuthRes = keepForReturn(res2);
@@ -1754,7 +2076,10 @@ function createRoutedFetch(pool, log2, baseFetch = (input, init) => globalThis.f
               if (res2.status !== 401 && res2.status !== 403 && res2.status !== 429) {
                 served(acc.id);
                 if (attempt > 0)
-                  log2("info", `cline-free: request recovered on ${acc.label ?? acc.id} after re-auth (attempt ${attempt + 1})`);
+                  log2(
+                    "info",
+                    `cline-free: request recovered on ${acc.label ?? acc.id} after re-auth (attempt ${attempt + 1})`
+                  );
                 else log2("info", `cline-free: request recovered on ${acc.label ?? acc.id} after silent refresh`);
                 await drain(res).catch(() => {
                 });
@@ -1768,7 +2093,14 @@ function createRoutedFetch(pool, log2, baseFetch = (input, init) => globalThis.f
                 });
                 await drain(res2).catch(() => {
                 });
-                markAccountLimited(pool, acc.id, parseRetryAfterMs(res2) ?? parseRetryAfterFromBody(detail22), log2, detail22, reqModel);
+                markAccountLimited(
+                  pool,
+                  acc.id,
+                  parseRetryAfterMs(res2) ?? parseRetryAfterFromBody(detail22),
+                  log2,
+                  detail22,
+                  reqModel
+                );
                 continue;
               }
               const snippet22 = await readSnippet(res2);
@@ -1792,7 +2124,11 @@ function createRoutedFetch(pool, log2, baseFetch = (input, init) => globalThis.f
             if (e instanceof TerminalAuthError) {
               quarantineAccount(pool, acc, e.message, log2);
             } else {
-              log2("warn", `cline-free: token refresh failed for ${acc.label ?? acc.id}: ${e instanceof Error ? e.message : String(e)} \u2014 trying next account`, { accountId: acc.id });
+              log2(
+                "warn",
+                `cline-free: token refresh failed for ${acc.label ?? acc.id}: ${e instanceof Error ? e.message : String(e)} \u2014 trying next account`,
+                { accountId: acc.id }
+              );
               acc.lastError = "refresh failed";
               void savePoolFile(pool).catch(() => {
               });
@@ -1817,7 +2153,11 @@ function createRoutedFetch(pool, log2, baseFetch = (input, init) => globalThis.f
       }
       if (res.status !== 429) {
         served(accountId);
-        if (attempt > 0) log2("info", `cline-free: request recovered on ${findAccount(pool, accountId)?.label ?? "fallback account"} after 429/402/re-auth (attempt ${attempt + 1})`);
+        if (attempt > 0)
+          log2(
+            "info",
+            `cline-free: request recovered on ${findAccount(pool, accountId)?.label ?? "fallback account"} after 429/402/re-auth (attempt ${attempt + 1})`
+          );
         return res;
       }
       const snippet = await readSnippet(res);
@@ -1835,23 +2175,32 @@ function createRoutedFetch(pool, log2, baseFetch = (input, init) => globalThis.f
     }
     if (lastAuthRes && !lastRes) {
       const quarantined = pool.accounts.filter((a) => a.authFailedAt).map((a) => `${a.label ?? a.id}`).join(", ");
-      log2("error", `cline-free: all ${tried.size} account(s) rejected auth (401/403). ${quarantined ? `Quarantined: ${quarantined}. ` : ""}Run /connect \u2192 cline-free and log in again; rotation continues when a healthy account exists.`);
+      log2(
+        "error",
+        `cline-free: all ${tried.size} account(s) rejected auth (401/403). ${quarantined ? `Quarantined: ${quarantined}. ` : ""}Run /connect \u2192 cline-free and log in again; rotation continues when a healthy account exists.`
+      );
       return lastAuthRes;
     }
     if (lastRes && paid) {
-      log2("error", `cline-free: no account could serve paid model ${reqModel} (all ${tried.size} tried are out of Cline credits or rate limited). Add credits or another Cline account via /connect.`);
+      log2(
+        "error",
+        `cline-free: no account could serve paid model ${reqModel} (all ${tried.size} tried are out of Cline credits or rate limited). Add credits or another Cline account via /connect.`
+      );
       return lastRes;
     }
     if (lastRes) {
-      const waiting = pool.accounts.filter((a) => a.limitedUntil && a.limitedUntil > Date.now()).map((a) => `${a.label ?? a.id}\u2192${new Date(a.limitedUntil).toISOString()}`).join(", ");
-      log2("error", `cline-free: all ${tried.size} account(s) hit 429 daily quota. ${waiting ? `Cooling: ${waiting}. ` : ""}Add another Cline account via /connect to keep going.`);
-      const resetOf = (a) => modelLimitUntil(a, reqModel) ?? a.limitedUntil ?? 0;
+      const waiting = pool.accounts.filter((a) => cooldownUntil(a) > Date.now()).map((a) => `${a.label ?? a.id}\u2192${new Date(cooldownUntil(a)).toISOString()}`).join(", ");
+      log2(
+        "error",
+        `cline-free: all ${tried.size} account(s) hit 429 daily quota. ${waiting ? `Cooling: ${waiting}. ` : ""}Add another Cline account via /connect to keep going.`
+      );
+      const resetOf = (a) => cooldownUntil(a, reqModel);
       const earliest = allCandidates(pool).sort((a, b) => resetOf(a) - resetOf(b))[0];
       const t = earliest ? tokenOf(earliest) : void 0;
       if (earliest && t) return await send(t);
       return lastRes;
     }
-    return origFetch(input, init);
+    return send(incomingToken || void 0);
   });
 }
 function needsFailover(status) {

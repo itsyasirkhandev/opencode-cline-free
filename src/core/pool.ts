@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import { refreshClineToken, validateClineToken } from "./auth.ts"
 import { ACCOUNTS_FILE_NAME, API_BASE, REFRESH_BUFFER_MS } from "./constants.ts"
 import { TerminalAuthError, TransientAuthError, fetchWithTimeout, sleep, withWorkOSPrefix } from "./http.ts"
@@ -24,7 +24,9 @@ export type PoolAccount = {
   apiKey?: string
   source: AccountSource
   addedAt: number
-  /** ms epoch until which this account is skipped (set on 429). */
+  /** Version 2 separates global cooldowns from per-model cooldowns. */
+  limitsVersion?: 2
+  /** True account-wide cooldown; never a per-model aggregate. */
   limitedUntil?: number
   /** Per-model 429 cooldowns: Cline's free caps are per user+model, so an
    * account exhausted on deepseek still has muse quota (and vice versa). */
@@ -214,10 +216,13 @@ export function parseRetryAfterFromBody(detail: string | undefined): number | un
 }
 
 export function isRoutableUrl(url: string): boolean {
-  return (
-    url.startsWith(API_BASE) &&
-    (url.includes("/chat/completions") || url.includes("/completions"))
-  )
+  try {
+    const parsed = new URL(url)
+    return parsed.origin === API_BASE && !parsed.username && !parsed.password &&
+      /^\/api\/v1\/(?:chat\/)?completions\/?$/.test(parsed.pathname)
+  } catch {
+    return false
+  }
 }
 
 /** True when a 401/403 body looks like a dead session (not a permission /
@@ -231,103 +236,305 @@ export function isAuthFailure(status: number, snippet: string): boolean {
   )
 }
 
-export async function loadPoolFile(): Promise<PoolFile> {
+// A baseline records what THIS pool last read/committed, not what some other
+// process wrote. Save only the delta against it under the same mutex as token
+// refresh. Thus a metadata save can never write an unchanged stale credential.
+const baselines = new WeakMap<PoolFile, PoolFile>()
+const revivals = new WeakMap<PoolFile, Set<string>>()
+const copy = <T,>(value: T): T => structuredClone(value)
+const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
+const emptyPool = (): PoolFile => ({ version: 1, accounts: [] })
+
+async function readPoolFile(file: string): Promise<PoolFile> {
+  const { readFile } = await import("node:fs/promises")
+  let raw: string
   try {
-    const { readFile } = await import("node:fs/promises")
-    const raw = await readFile(poolFilePath(), "utf8")
-    const data = JSON.parse(raw) as Partial<PoolFile>
-    const accounts = Array.isArray(data.accounts)
-      ? data.accounts.filter(
-          (a): a is PoolAccount =>
-            !!a && typeof a.id === "string" && (typeof a.access === "string" || typeof a.apiKey === "string"),
-        )
-      : []
-    const removed = Array.isArray(data.removed) ? data.removed.filter((r): r is string => typeof r === "string") : []
-    return {
-      version: 1,
-      activeId: typeof data.activeId === "string" ? data.activeId : undefined,
-      accounts,
-      ...(removed.length > 0 ? { removed } : {}),
-    }
-  } catch {
-    return { version: 1, accounts: [] }
+    raw = await readFile(file, "utf8")
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return emptyPool()
+    throw e
+  }
+  const data = JSON.parse(raw) as Partial<PoolFile>
+  const accounts = Array.isArray(data.accounts)
+    ? data.accounts.filter(
+        (a): a is PoolAccount =>
+          !!a && typeof a.id === "string" && (typeof a.access === "string" || typeof a.apiKey === "string"),
+      )
+    : []
+  for (const a of accounts) migrateLimits(a)
+  const removed = Array.isArray(data.removed) ? data.removed.filter((r): r is string => typeof r === "string") : []
+  return {
+    version: 1,
+    activeId: typeof data.activeId === "string" ? data.activeId : undefined,
+    accounts,
+    ...(removed.length ? { removed } : {}),
   }
 }
 
-export async function savePoolFile(pool: PoolFile): Promise<void> {
-  // Atomic write (tmp + rename): a crash mid-write can never leave a
-  // half-written pool file behind. Per-save metadata races across processes
-  // (lastUsed etc.) resolve last-writer-wins, which is acceptable; token
-  // updates converge via peer-adoption inside refreshAccount's file lock.
-  const { mkdir, writeFile, chmod, rename, unlink } = await import("node:fs/promises")
-  const { dirname } = await import("node:path")
-  const file = poolFilePath()
-  await mkdir(dirname(file), { recursive: true })
-  const tmp = `${file}.tmp.${process.pid}.${Date.now()}`
+export async function loadPoolFile(): Promise<PoolFile> {
+  let pool: PoolFile
   try {
-    await writeFile(tmp, JSON.stringify(pool, null, 2), { mode: 0o600 })
-    await chmod(tmp, 0o600).catch(() => {})
+    pool = await readPoolFile(poolFilePath())
+  } catch {
+    pool = emptyPool()
+  }
+  baselines.set(pool, copy(pool))
+  return pool
+}
+
+const credentialKeys = ["access", "apiKey", "refresh", "expires"] as const
+const healthKeys = new Set([
+  "limitedUntil",
+  "modelLimits",
+  "lastError",
+  "authFailedAt",
+  "authFailedReason",
+  "lastProbeAt",
+])
+const credentials = (a: PoolAccount) => credentialKeys.map((k) => a[k])
+
+/** Three-way merge. Credentials are an atomic compare-and-swap group; stale
+ * health reports for a replaced credential are ignored. Model entries merge
+ * independently, and deletion applies only to a value we actually observed. */
+function mergeAccount(base: PoolAccount, local: PoolAccount, disk: PoolAccount): PoolAccount {
+  const result = copy(disk)
+  const peerRotated = !equal(credentials(base), credentials(disk))
+  if (!peerRotated && !equal(credentials(base), credentials(local))) {
+    for (const k of credentialKeys) {
+      if (local[k] === undefined) delete result[k]
+      else (result as Record<string, unknown>)[k] = local[k]
+    }
+  }
+  for (const k of new Set([...Object.keys(base), ...Object.keys(local)])) {
+    if (credentialKeys.includes(k as (typeof credentialKeys)[number]) || k === "id") continue
+    if (peerRotated && healthKeys.has(k)) continue
+    const b = (base as Record<string, unknown>)[k]
+    const l = (local as Record<string, unknown>)[k]
+    if (equal(b, l)) continue
+    if (k === "modelLimits") {
+      const merged = { ...disk.modelLimits }
+      for (const m of new Set([...Object.keys(base.modelLimits ?? {}), ...Object.keys(local.modelLimits ?? {})])) {
+        const before = base.modelLimits?.[m],
+          after = local.modelLimits?.[m]
+        if (before === after) continue
+        if (after !== undefined) merged[m] = Math.max(merged[m] ?? 0, after)
+        else if (merged[m] === before) delete merged[m]
+      }
+      if (Object.keys(merged).length) result.modelLimits = merged
+      else delete result.modelLimits
+    } else if (l === undefined) {
+      if (equal((disk as Record<string, unknown>)[k], b)) delete (result as Record<string, unknown>)[k]
+    } else if (k === "lastUsed" || k === "limitedUntil") {
+      ;(result as Record<string, unknown>)[k] = Math.max(Number((disk as Record<string, unknown>)[k]) || 0, Number(l))
+    } else {
+      ;(result as Record<string, unknown>)[k] = copy(l)
+    }
+  }
+  return result
+}
+
+function mergePool(base: PoolFile, local: PoolFile, disk: PoolFile, revived = new Set<string>()): PoolFile {
+  const result = copy(disk)
+  const removed = new Set(disk.removed)
+  for (const r of base.removed ?? []) if (!local.removed?.includes(r)) removed.delete(r)
+  for (const r of revived) removed.delete(r)
+  for (const r of local.removed ?? []) if (!base.removed?.includes(r)) removed.add(r)
+  result.removed = [...removed].slice(-MAX_REMOVED)
+  if (!result.removed.length) delete result.removed
+  const before = new Map(base.accounts.map((a) => [a.id, a]))
+  const after = new Map(local.accounts.map((a) => [a.id, a]))
+  // Explicit deletions remove only records present in our baseline. A stale
+  // snapshot missing a peer's newly added account is NOT a deletion.
+  result.accounts = result.accounts.filter((a) => !(before.has(a.id) && !after.has(a.id)))
+  for (const a of local.accounts) {
+    const old = before.get(a.id)
+    const idx = result.accounts.findIndex((d) => d.id === a.id)
+    if (old) {
+      if (idx >= 0) result.accounts[idx] = mergeAccount(old, a, result.accounts[idx])
+      else if (revived.has(identityHash(tokenOf(a) ?? ""))) result.accounts.push(copy(a))
+      // Only an explicit login may resurrect a record removed by a peer.
+    } else if (idx < 0) {
+      const token = tokenOf(a)
+      if (!token || !removed.has(identityHash(token))) result.accounts.push(copy(a))
+    }
+  }
+  result.accounts = result.accounts.filter((a) => !isRemoved(result, tokenOf(a) ?? ""))
+  if (local.activeId !== base.activeId) result.activeId = local.activeId
+  if (!result.accounts.some((a) => a.id === result.activeId)) result.activeId = result.accounts[0]?.id
+  return result
+}
+
+/** Adopt peer state without replacing live account objects held by callers. */
+function adoptPool(pool: PoolFile, next: PoolFile): void {
+  const existing = new Map(pool.accounts.map((a) => [a.id, a]))
+  pool.accounts = next.accounts.map((a) => {
+    const current = existing.get(a.id)
+    if (!current) return a
+    for (const k of Object.keys(current)) delete (current as Record<string, unknown>)[k]
+    Object.assign(current, a)
+    return current
+  })
+  pool.activeId = next.activeId
+  if (next.removed) pool.removed = next.removed
+  else delete pool.removed
+}
+
+// Caller MUST own file's mutex. Kept private so refresh does not recursively
+// acquire the mutex, or deadlock behind a queued metadata save.
+async function persistPoolFile(pool: PoolFile, file: string): Promise<void> {
+  const { writeFile, chmod, rename, unlink } = await import("node:fs/promises")
+  const base = baselines.get(pool) ?? emptyPool()
+  const snapshot = copy(pool)
+  const revived = new Set(revivals.get(pool))
+  const merged = mergePool(base, snapshot, await readPoolFile(file), revived)
+  const tmp = `${file}.tmp.${process.pid}.${randomUUID()}`
+  try {
+    await writeFile(tmp, JSON.stringify(merged, null, 2), { mode: 0o600, flag: "wx" })
+    await chmod(tmp, 0o600)
     await rename(tmp, file)
   } catch (e) {
     await unlink(tmp).catch(() => {})
     throw e
   }
+  // Preserve mutations made while disk I/O was pending for the next save.
+  adoptPool(pool, mergePool(snapshot, pool, merged, new Set(revivals.get(pool))))
+  baselines.set(pool, copy(merged))
+  for (const r of revived) revivals.get(pool)?.delete(r)
 }
 
-/** Cross-process mutex around refresh critical sections (lockfile with
- * stale-lock breaking). Prevents two opencode instances from refreshing
- * the same account concurrently and tripping reuse detection. */
-export async function withFileLock<T>(fn: () => Promise<T>, opts: { timeoutMs?: number; staleMs?: number } = {}): Promise<T> {
-  const { open, unlink, stat, utimes } = await import("node:fs/promises")
-  const lock = `${poolFilePath()}.lock`
-  const timeoutMs = opts.timeoutMs ?? 5000
-  const staleMs = opts.staleMs ?? 15000
+export async function savePoolFile(pool: PoolFile): Promise<void> {
+  const file = poolFilePath()
+  await lockPoolFile(file, () => persistPoolFile(pool, file))
+}
+
+/** Cross-process mutex shared by ALL pool writes and refresh. A prepared,
+ * nonempty directory is atomically renamed into place. Each owner has a unique
+ * filename: concurrent stale-lock reapers can unlink ONLY the dead owner's
+ * file, and rmdir cannot remove a successor's nonempty lock. A live local PID
+ * is never evicted merely for being slow. Requires a local filesystem with
+ * atomic directory rename; mixed old/new plugin writers are not supported. */
+async function lockPoolFile<T>(
+  file: string,
+  fn: () => Promise<T>,
+  opts: { timeoutMs?: number; staleMs?: number } = {},
+): Promise<T> {
+  const { mkdir, open, rename, unlink, rmdir, stat, readFile, readdir } = await import("node:fs/promises")
+  const { dirname } = await import("node:path")
+  await mkdir(dirname(file), { recursive: true })
+  const lock = `${file}.lock`
+  const ownerName = `owner-${process.pid}-${randomUUID()}`
+  const candidate = `${lock}.${ownerName}`
+  const timeoutMs = opts.timeoutMs ?? 120_000
+  const staleMs = opts.staleMs ?? 15_000
   const start = Date.now()
-  while (true) {
+  const dead = (pid: number): boolean => {
+    if (!Number.isInteger(pid) || pid <= 0) return false
     try {
-      const fh = await open(lock, "wx", 0o600)
-      await fh.writeFile(`${process.pid}`).catch(() => {})
-      await fh.close().catch(() => {})
-      break
-    } catch (e: unknown) {
-      if ((e as { code?: string })?.code !== "EEXIST") throw e
-      try {
-        const st = await stat(lock)
-        if (Date.now() - st.mtimeMs > staleMs) {
-          await unlink(lock).catch(() => {})
-          continue
-        }
-      } catch {
-        continue // lock vanished between open and stat; retry
-      }
-      if (Date.now() - start > timeoutMs) {
-        throw new TransientAuthError(`timed out waiting for pool lock (${lock})`)
-      }
-      await sleep(50 + Math.random() * 100)
+      process.kill(pid, 0)
+      return false
+    } catch (e) {
+      return (e as NodeJS.ErrnoException).code === "ESRCH"
     }
   }
-  // Heartbeat: keep the lock's mtime fresh while fn runs, so a slow token
-  // refresh (up to ~4 x 15s with retries) is never mistaken for a stale lock
-  // and broken by another OpenCode process.
-  const beat = setInterval(() => {
-    const now = new Date()
-    void utimes(lock, now, now).catch(() => {})
-  }, Math.max(250, Math.floor(staleMs / 3)))
-  ;(beat as { unref?: () => void }).unref?.()
+  await mkdir(candidate, { mode: 0o700 })
+  const owner = await open(`${candidate}/${ownerName}`, "wx", 0o600).catch(async (e) => {
+    await rmdir(candidate).catch(() => {})
+    throw e
+  })
+  let beat: ReturnType<typeof setInterval> | undefined
+  let acquired = false
   try {
+    await owner.writeFile(`${process.pid}`)
+    while (true) {
+      try {
+        await rename(candidate, lock)
+        acquired = true
+        break
+      } catch (e) {
+        if (!["EEXIST", "ENOTEMPTY", "ENOTDIR", "EISDIR"].includes((e as NodeJS.ErrnoException).code ?? "")) throw e
+        try {
+          const st = await stat(lock)
+          if (st.isDirectory()) {
+            // Snapshot the unique old filename BEFORE checking liveness. A
+            // successor has a different filename, so reapers cannot touch it.
+            const names = await readdir(lock)
+            for (const name of names) {
+              if (!/^owner-\d+-[\da-f-]+$/.test(name)) continue
+              const path = `${lock}/${name}`
+              const ownerStat = await stat(path)
+              const pid = Number(await readFile(path, "utf8"))
+              if (dead(pid) && Date.now() - ownerStat.mtimeMs > staleMs) await unlink(path).catch(() => {})
+            }
+            // Empty means a release/reap was interrupted. Nonempty successors
+            // cannot be removed (ENOTEMPTY); no check-then-unlink race.
+            await rmdir(lock).catch(() => {})
+          } else if (Date.now() - st.mtimeMs > staleMs && dead(Number(await readFile(lock, "utf8")))) {
+            // Recover a dead old-version lockfile. unlink cannot delete a
+            // new-version directory acquired concurrently by another process.
+            await unlink(lock).catch(() => {})
+          }
+        } catch {
+          /* lock vanished or changed while inspecting it */
+        }
+        if (Date.now() - start > timeoutMs) throw new TransientAuthError(`timed out waiting for pool lock (${lock})`)
+        await sleep(50 + Math.random() * 100)
+      }
+    }
+    beat = setInterval(
+      () => {
+        const now = new Date()
+        void owner.utimes(now, now).catch(() => {})
+      },
+      Math.max(10, Math.floor(staleMs / 3)),
+    )
+    beat.unref()
     return await fn()
   } finally {
-    clearInterval(beat)
-    await unlink(lock).catch(() => {})
+    if (beat) clearInterval(beat)
+    await owner.close()
+    if (acquired) {
+      await unlink(`${lock}/${ownerName}`).catch(() => {})
+      await rmdir(lock).catch(() => {})
+    } else {
+      await unlink(`${candidate}/${ownerName}`).catch(() => {})
+      await rmdir(candidate).catch(() => {})
+    }
   }
+}
+
+export async function withFileLock<T>(
+  fn: () => Promise<T>,
+  opts: { timeoutMs?: number; staleMs?: number } = {},
+): Promise<T> {
+  return lockPoolFile(poolFilePath(), fn, opts)
+}
+
+/** Legacy files mirrored the max model cooldown into limitedUntil. An exact
+ * match is interpreted as that old aggregate; other values remain global.
+ * An old global cooldown exactly equal to the aggregate is irrecoverably
+ * ambiguous. All new writes carry an explicit per-account format marker. */
+function migrateLimits(a: PoolAccount): void {
+  if (a.limitsVersion === 2) return
+  const maxModel = Math.max(0, ...Object.values(a.modelLimits ?? {}))
+  if (maxModel && a.limitedUntil === maxModel) delete a.limitedUntil
+  a.limitsVersion = 2
+}
+
+/** Aggregate for displays, or actual next eligibility for a known model. */
+export function cooldownUntil(a: PoolAccount, model?: string): number {
+  migrateLimits(a)
+  return Math.max(
+    a.limitedUntil ?? 0,
+    model ? (modelLimitUntil(a, model) ?? 0) : Math.max(0, ...Object.values(a.modelLimits ?? {})),
+  )
 }
 
 export function pruneLimits(pool: PoolFile, now = Date.now()): boolean {
   let changed = false
   for (const a of trackedAccounts(pool)) {
+    migrateLimits(a)
     if (a.limitedUntil && a.limitedUntil <= now) {
       delete a.limitedUntil
-      delete a.lastError
       changed = true
     }
     if (a.modelLimits) {
@@ -338,6 +545,10 @@ export function pruneLimits(pool: PoolFile, now = Date.now()): boolean {
         }
       }
       if (Object.keys(a.modelLimits).length === 0) delete a.modelLimits
+    }
+    if (!a.limitedUntil && !a.modelLimits && a.lastError?.startsWith("429")) {
+      delete a.lastError
+      changed = true
     }
   }
   return changed
@@ -431,7 +642,7 @@ export function allCandidates(pool: PoolFile): PoolAccount[] {
     if (ukey && seenUser.has(ukey)) return
     if (ukey) seenUser.add(ukey)
     seenToken.add(k)
-    const fp = `${k.slice(0, 4)}${k.slice(-4)}${k.length}`
+    const fp = createHash("sha256").update(k).digest("hex")
     const acc = envAccount(
       pool,
       `env-${fp}`,
@@ -570,6 +781,8 @@ export type Logger = (level: "info" | "warn" | "error", message: string, extra?:
 /** Clear all health state: cooldowns, errors, and auth quarantine.
  * Called whenever fresh credentials land for an account. */
 export function clearAuthHealth(acc: PoolAccount): void {
+  acc.limitsVersion = 2
+  delete acc.modelLimits
   delete acc.limitedUntil
   delete acc.lastError
   delete acc.authFailedAt
@@ -668,8 +881,11 @@ export function rememberRemoval(pool: PoolFile, token: string): void {
 
 /** An explicit login (device, CLI import, add-token) brings the user back. */
 export function forgetRemoval(pool: PoolFile, token: string): void {
-  if (!pool.removed) return
   const id = identityHash(token)
+  const revived = revivals.get(pool) ?? new Set<string>()
+  revived.add(id)
+  revivals.set(pool, revived)
+  if (!pool.removed) return
   pool.removed = pool.removed.filter((r) => r !== id)
   if (pool.removed.length === 0) delete pool.removed
 }
@@ -678,14 +894,18 @@ export function forgetRemoval(pool: PoolFile, token: string): void {
 // requests share ONE refresh instead of each firing its own. Without this,
 // rotation + reuse detection on the server side sees a replayed refresh
 // token and can revoke the session (invalid_grant lockout caused by us).
-const refreshFlight = new Map<string, Promise<void>>()
+const refreshFlights = new WeakMap<PoolFile, Map<string, Promise<void>>>()
 
 /** Ensure acc has fresh tokens. Joins an in-flight refresh when one exists,
  * adopts a peer process's newer tokens under the file lock when available,
  * and otherwise refreshes (with retry) and persists atomically.
  * Throws TerminalAuthError (re-login required) or TransientAuthError. */
 export async function refreshAccount(pool: PoolFile, acc: PoolAccount, log: Logger): Promise<void> {
-  const inflight = refreshFlight.get(acc.id)
+  const file = poolFilePath()
+  const flightKey = `${file}\0${acc.id}`
+  const refreshFlight = refreshFlights.get(pool) ?? new Map<string, Promise<void>>()
+  refreshFlights.set(pool, refreshFlight)
+  const inflight = refreshFlight.get(flightKey)
   if (inflight) {
     await inflight
     return
@@ -693,18 +913,35 @@ export async function refreshAccount(pool: PoolFile, acc: PoolAccount, log: Logg
   const p = (async (): Promise<void> => {
     const refreshToken = acc.refresh
     if (!refreshToken) {
-      throw new TerminalAuthError(`account ${acc.label ?? acc.id} has no refresh token — re-login required (/connect → cline-free)`)
+      throw new TerminalAuthError(
+        `account ${acc.label ?? acc.id} has no refresh token — re-login required (/connect → cline-free)`,
+      )
     }
-    await withFileLock(async () => {
+    await lockPoolFile(file, async () => {
       // A peer process may have refreshed while we waited for the lock:
       // adopt its tokens instead of replaying our (now stale) refresh token.
-      const disk = await loadPoolFile()
+      const disk = await readPoolFile(file)
       const peer = disk.accounts.find((a) => a.id === acc.id)
+      if (
+        (!peer && baselines.get(pool)?.accounts.some((a) => a.id === acc.id)) ||
+        (tokenOf(acc) && isRemoved(disk, tokenOf(acc)!))
+      ) {
+        adoptPool(pool, disk)
+        baselines.set(pool, copy(disk))
+        throw new TerminalAuthError("account removed by another process — re-login required")
+      }
+      const observed = baselines.get(pool)?.accounts.find((a) => a.id === acc.id)
+      const peerChanged = !!peer && (!observed || !equal(credentials(peer), credentials(observed)))
       const peerTok = peer ? tokenOf(peer) : undefined
       const mine = tokenOf(acc)
       if (
-        peer?.refresh && peer?.expires && peer.expires - Date.now() >= REFRESH_BUFFER_MS &&
-        peerTok && mine && stripWorkOSPrefix(peerTok) !== stripWorkOSPrefix(mine)
+        peerChanged &&
+        peer?.refresh &&
+        peer?.expires &&
+        peer.expires - Date.now() >= REFRESH_BUFFER_MS &&
+        peerTok &&
+        mine &&
+        (stripWorkOSPrefix(peerTok) !== stripWorkOSPrefix(mine) || peer.refresh !== refreshToken)
       ) {
         acc.access = peer.access
         acc.apiKey = peer.apiKey
@@ -714,19 +951,34 @@ export async function refreshAccount(pool: PoolFile, acc: PoolAccount, log: Logg
         log("info", `cline-free: adopted peer-refreshed tokens for ${acc.label ?? acc.id}`)
         return
       }
-      const next = await refreshClineToken(refreshToken, { label: acc.label ?? acc.id, log })
+      // Even if the peer token has already expired, its rotated refresh
+      // credential is the only one safe to use.
+      const next = await refreshClineToken(peerChanged ? (peer?.refresh ?? refreshToken) : refreshToken, {
+        label: acc.label ?? acc.id,
+        log,
+      })
       acc.access = next.access
       acc.refresh = next.refresh
       acc.expires = next.expires
       clearAuthHealth(acc)
-      await savePoolFile(pool)
+      // Rebase the credential group to the locked disk record.
+      const baseline = copy(baselines.get(pool) ?? emptyPool())
+      const idx = baseline.accounts.findIndex((a) => a.id === acc.id)
+      if (peer && idx >= 0) {
+        for (const k of credentialKeys) {
+          if (peer[k] === undefined) delete baseline.accounts[idx][k]
+          else (baseline.accounts[idx] as Record<string, unknown>)[k] = peer[k]
+        }
+      } else if (peer) baseline.accounts.push(copy(peer))
+      baselines.set(pool, baseline)
+      await persistPoolFile(pool, file)
     })
   })()
-  refreshFlight.set(acc.id, p)
+  refreshFlight.set(flightKey, p)
   try {
     await p
   } finally {
-    refreshFlight.delete(acc.id)
+    refreshFlight.delete(flightKey)
   }
 }
 
@@ -802,17 +1054,6 @@ export function markNoCredits(pool: PoolFile, id: string, log: Logger, detail?: 
   )
 }
 
-/** True when the account is cooling down for every model. `limitedUntil`
- * also mirrors the longest per-model cooldown (for status displays), so when
- * the model is known it only blocks if no model limit explains it — an
- * account capped on one model still serves the others. */
-function accountWideLimited(a: PoolAccount, now: number, model: string | undefined) {
-  if (!a.limitedUntil || a.limitedUntil <= now) return false
-  if (!model || !a.modelLimits) return true
-  const until = a.limitedUntil
-  return !Object.values(a.modelLimits).some((u) => u >= until)
-}
-
 /** True when `a` can serve `model` right now: not out of credits (paid
  * models), and neither its cooldown for the model nor its account-wide
  * cooldown is running. */
@@ -820,7 +1061,8 @@ export function isAvailable(pool: PoolFile, a: PoolAccount, now: number, model: 
   if (isPaidModel(model) && hasNoCredits(pool, a.id)) return false
   const until = modelLimitUntil(a, model)
   if (until && until > now) return false
-  return !accountWideLimited(a, now, model)
+  migrateLimits(a)
+  return !a.limitedUntil || a.limitedUntil <= now
 }
 
 /** Next healthy account in round-robin order; undefined when all limited.
@@ -897,14 +1139,12 @@ export function markAccountLimited(
   const until = Date.now() + (retryAfterMs ?? nextUtcMidnightMs() - Date.now())
   const name = acc?.label ?? id
   if (acc) {
+    migrateLimits(acc)
     if (model) {
       acc.modelLimits ??= {}
       acc.modelLimits[model] = until
-      // Keep limitedUntil as the account's max cooldown across models so
-      // existing status displays and the earliest-reset replay stay honest.
-      if (!acc.limitedUntil || acc.limitedUntil < until) acc.limitedUntil = until
     } else {
-      acc.limitedUntil = until
+      acc.limitedUntil = Math.max(acc.limitedUntil ?? 0, until)
     }
     acc.lastError = `429${detail ? `: ${detail}` : ""}`
   }
@@ -917,7 +1157,7 @@ export function markAccountLimited(
 }
 
 export function describeLimits(pool: PoolFile): string {
-  const limited = pool.accounts.filter((a) => a.limitedUntil && a.limitedUntil > Date.now())
+  const limited = pool.accounts.filter((a) => cooldownUntil(a) > Date.now())
   if (limited.length === 0) return ""
-  return ` Limited: ${limited.map((a) => `${a.label ?? a.id}→${new Date(a.limitedUntil!).toISOString()}`).join(", ")}.`
+  return ` Limited: ${limited.map((a) => `${a.label ?? a.id}→${new Date(cooldownUntil(a)).toISOString()}`).join(", ")}.`
 }

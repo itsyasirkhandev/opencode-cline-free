@@ -45,35 +45,82 @@ export function isAbortError(e: unknown): boolean {
   )
 }
 
-/** fetch with a timeout. Timeouts surface as TransientAuthError; an
- * outer-signal abort rethrows the caller's reason. */
+/** Bounded, buffered fetch for small authentication responses ONLY. The
+ * deadline includes response consumption, not just headers. Inference streams
+ * deliberately do not use this helper. An abort races both fetch and reads so
+ * even a custom transport/body that ignores AbortSignal cannot hang callers. */
 export async function fetchWithTimeout(
   url: string,
   init: RequestInit & { timeoutMs?: number } = {},
 ): Promise<Response> {
   const { timeoutMs = AUTH_TIMEOUT_MS, signal: outer, ...rest } = init
+  outer?.throwIfAborted()
   const ctrl = new AbortController()
-  let timedOut = false
-  const timer = setTimeout(() => {
-    timedOut = true
-    ctrl.abort()
-  }, timeoutMs)
-  const onOuterAbort = () => ctrl.abort()
-  if (outer) {
-    if (outer.aborted) {
-      clearTimeout(timer)
-      throw (outer as AbortSignal).reason ?? new DOMException("Aborted", "AbortError")
+  const timer = setTimeout(
+    () => ctrl.abort(new TransientAuthError(`request timed out after ${timeoutMs}ms: ${url}`)),
+    timeoutMs,
+  )
+  const onOuterAbort = () => ctrl.abort(outer!.reason)
+  outer?.addEventListener("abort", onOuterAbort, { once: true })
+  let onAbort: () => void = () => {}
+  const aborted = new Promise<never>((_, reject) => {
+    onAbort = () => reject(ctrl.signal.reason)
+    ctrl.signal.addEventListener("abort", onAbort, { once: true })
+  })
+  const consume = async (): Promise<Response> => {
+    const res = await fetch(url, { ...rest, signal: ctrl.signal })
+    if (ctrl.signal.aborted) {
+      void res.body?.cancel().catch(() => {})
+      throw ctrl.signal.reason
     }
-    outer.addEventListener("abort", onOuterAbort, { once: true })
+    const reader = res.body?.getReader()
+    const cancel = () => {
+      void reader?.cancel(ctrl.signal.reason).catch(() => {})
+    }
+    ctrl.signal.addEventListener("abort", cancel, { once: true })
+    try {
+      const chunks: Uint8Array[] = []
+      let length = 0
+      if (reader)
+        while (true) {
+          const { done, value } = await reader.read()
+          ctrl.signal.throwIfAborted()
+          if (done) break
+          length += value.byteLength
+          // Auth responses are tiny; do not buffer a misbehaving endpoint forever.
+          if (length > 1024 * 1024) {
+            cancel()
+            throw new TransientAuthError("authentication response exceeded 1 MiB")
+          }
+          chunks.push(value)
+        }
+      const bytes = new Uint8Array(length)
+      let offset = 0
+      for (const chunk of chunks) {
+        bytes.set(chunk, offset)
+        offset += chunk.length
+      }
+      const buffered = new Response(res.body ? bytes : null, {
+        status: res.status,
+        statusText: res.statusText,
+        headers: res.headers,
+      })
+      // Response construction does not copy fetch-owned metadata.
+      for (const key of ["url", "redirected", "type"] as const) {
+        Object.defineProperty(buffered, key, { value: res[key] })
+      }
+      return buffered
+    } finally {
+      ctrl.signal.removeEventListener("abort", cancel)
+      reader?.releaseLock()
+    }
   }
   try {
-    return await fetch(url, { ...rest, signal: ctrl.signal })
-  } catch (e) {
-    if (timedOut) throw new TransientAuthError(`request timed out after ${timeoutMs}ms: ${url}`)
-    throw e
+    return await Promise.race([consume(), aborted])
   } finally {
     clearTimeout(timer)
     outer?.removeEventListener("abort", onOuterAbort)
+    ctrl.signal.removeEventListener("abort", onAbort)
   }
 }
 
@@ -100,7 +147,9 @@ export function classifyHttpFailure(
     return new TransientAuthError(`${where}: HTTP ${status}${code ? ` (${code})` : ""}${extra}`)
   }
   if (status !== undefined && status >= 400) {
-    return new TerminalAuthError(`${where}: HTTP ${status}${code ? ` (${code})` : ""}${extra} — retrying is unlikely to help`)
+    return new TerminalAuthError(
+      `${where}: HTTP ${status}${code ? ` (${code})` : ""}${extra} — retrying is unlikely to help`,
+    )
   }
   return new TransientAuthError(`${where}${extra}`)
 }
@@ -108,24 +157,38 @@ export function classifyHttpFailure(
 /** Run fn, retrying transient failures with backoff. Terminal errors throw immediately. */
 export async function withTransientRetries<T>(
   fn: () => Promise<T>,
-  opts: { attempts?: number; label?: string; log?: Logger } = {},
+  opts: { attempts?: number; label?: string; log?: Logger; signal?: AbortSignal } = {},
 ): Promise<T> {
   const attempts = opts.attempts ?? TRANSIENT_MAX_ATTEMPTS
   let last: unknown
   for (let attempt = 0; attempt < attempts; attempt++) {
+    opts.signal?.throwIfAborted()
     try {
       return await fn()
     } catch (e) {
-      if (e instanceof TerminalAuthError) throw e
+      opts.signal?.throwIfAborted()
+      if (e instanceof TerminalAuthError || isAbortError(e)) throw e
       last = e
       if (attempt === attempts - 1) break
-      const wait =
-        TRANSIENT_BACKOFF_MS[Math.min(attempt, TRANSIENT_BACKOFF_MS.length - 1)] + Math.random() * 250
+      const wait = TRANSIENT_BACKOFF_MS[Math.min(attempt, TRANSIENT_BACKOFF_MS.length - 1)] + Math.random() * 250
       opts.log?.(
         "warn",
         `cline-free: attempt ${attempt + 1}/${attempts} failed${opts.label ? ` for ${opts.label}` : ""} (${e instanceof Error ? e.message : String(e)}) — retrying in ${Math.round(wait)}ms`,
       )
-      await sleep(wait)
+      await new Promise<void>((resolve, reject) => {
+        const cleanup = () => opts.signal?.removeEventListener("abort", cancel)
+        const timer = setTimeout(() => {
+          cleanup()
+          resolve()
+        }, wait)
+        const cancel = () => {
+          clearTimeout(timer)
+          cleanup()
+          reject(opts.signal!.reason)
+        }
+        opts.signal?.addEventListener("abort", cancel, { once: true })
+        if (opts.signal?.aborted) cancel()
+      })
     }
   }
   if (last instanceof TerminalAuthError) throw last
