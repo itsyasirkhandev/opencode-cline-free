@@ -2,42 +2,44 @@ import { API_BASE, REFRESH_BUFFER_MS, WORKOS_API, WORKOS_CLIENT_ID } from "./con
 import { TerminalAuthError, TransientAuthError, classifyHttpFailure, fetchWithTimeout, isAbortError, parseOAuthErrorCode, withTransientRetries, withWorkOSPrefix } from "./http.ts"
 import { type Logger } from "./pool.ts"
 
-export async function startDeviceAuth() {
-  const res = await withTransientRetries(
-    () =>
-      fetchWithTimeout(`${WORKOS_API}/user_management/authorize/device`, {
+export async function startDeviceAuth(signal?: AbortSignal) {
+  return withTransientRetries(
+    async () => {
+      const res = await fetchWithTimeout(`${WORKOS_API}/user_management/authorize/device`, {
+        signal,
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
         body: new URLSearchParams({ client_id: WORKOS_CLIENT_ID }),
-      }),
-    { attempts: 2, label: "device authorization" },
+      })
+      const data = (await res.json().catch(() => ({}))) as {
+        device_code?: string
+        user_code?: string
+        verification_uri?: string
+        verification_uri_complete?: string
+        expires_in?: number
+        interval?: number
+        error?: string
+        error_description?: string
+      }
+      if (!res.ok || !data.device_code || !data.user_code || !data.verification_uri) {
+        throw classifyHttpFailure(
+          res.ok ? undefined : res.status,
+          parseOAuthErrorCode(data),
+          "Cline device authorization",
+          data.error_description ?? (typeof data.error === "string" ? data.error : undefined) ?? res.statusText,
+        )
+      }
+      return {
+        deviceCode: data.device_code,
+        userCode: data.user_code,
+        verificationUri: data.verification_uri,
+        verificationUriComplete: data.verification_uri_complete,
+        expiresInSeconds: data.expires_in ?? 300,
+        intervalSeconds: data.interval ?? 5,
+      }
+    },
+    { attempts: 2, label: "device authorization", signal },
   )
-  const data = (await res.json().catch(() => ({}))) as {
-    device_code?: string
-    user_code?: string
-    verification_uri?: string
-    verification_uri_complete?: string
-    expires_in?: number
-    interval?: number
-    error?: string
-    error_description?: string
-  }
-  if (!res.ok || !data.device_code || !data.user_code || !data.verification_uri) {
-    throw classifyHttpFailure(
-      res.ok ? undefined : res.status,
-      parseOAuthErrorCode(data),
-      "Cline device authorization",
-      data.error_description ?? (typeof data.error === "string" ? data.error : undefined) ?? res.statusText,
-    )
-  }
-  return {
-    deviceCode: data.device_code,
-    userCode: data.user_code,
-    verificationUri: data.verification_uri,
-    verificationUriComplete: data.verification_uri_complete,
-    expiresInSeconds: data.expires_in ?? 300,
-    intervalSeconds: data.interval ?? 5,
-  }
 }
 
 export async function pollDeviceAuth(deviceCode: string, expiresInSeconds: number, intervalSeconds: number, signal?: AbortSignal) {
@@ -48,8 +50,14 @@ export async function pollDeviceAuth(deviceCode: string, expiresInSeconds: numbe
   // Sleep between polls, waking early when the login is abandoned.
   const wait = (ms: number) =>
     new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, ms)
-      signal?.addEventListener("abort", () => (clearTimeout(timer), resolve()), { once: true })
+      const done = () => {
+        clearTimeout(timer)
+        signal?.removeEventListener("abort", done)
+        resolve()
+      }
+      const timer = setTimeout(done, ms)
+      signal?.addEventListener("abort", done, { once: true })
+      if (signal?.aborted) done()
     })
   while (Date.now() <= deadline) {
     if (signal?.aborted) throw aborted()
@@ -66,6 +74,7 @@ export async function pollDeviceAuth(deviceCode: string, expiresInSeconds: numbe
         }),
       })
     } catch (e) {
+      if (signal?.aborted) throw aborted()
       if (isAbortError(e)) throw e
       // Transient blip on one poll must not kill the whole flow — wait out
       // this interval and try again (bounded by the deadline above).

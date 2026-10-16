@@ -4,7 +4,7 @@ import { CHAT_BASE_URL, CLINE_HEADERS, PROVIDER_ID } from "./core/constants.ts"
 import { withWorkOSPrefix } from "./core/http.ts"
 import { loadFreeModels } from "./core/modelList.ts"
 import { type AutoMeta, type FreeEntry, modelConfig } from "./core/models.ts"
-import { type Logger, accountEmail, allCandidates, dedupePool, fetchUserEmail, forgetRemoval, loadPoolFile, modelOfRequest, payloadEmail, pruneLimits, sameAccount, savePoolFile, tokenOf, upsertOAuthAccount } from "./core/pool.ts"
+import { type Logger, accountEmail, allCandidates, dedupePool, fetchUserEmail, forgetRemoval, isRoutableUrl, loadPoolFile, modelOfRequest, payloadEmail, pruneLimits, sameAccount, savePoolFile, tokenOf, upsertOAuthAccount } from "./core/pool.ts"
 import { type ConnectionCredential, mergeConnectionCredential, refreshViaPool, resolveActiveToken, tidyPool } from "./core/account.ts"
 import { TOOL_DESCRIPTIONS, addToken, poolStatusText, removeAccount } from "./core/tools.ts"
 import { recoverResponse } from "./core/router.ts"
@@ -262,6 +262,9 @@ export const setup: Plugin.Plugin["setup"] = async (ctx) => {
   await ctx.session.hook(
     "http.request",
     async (event) => {
+      // Provider scoping is not a URL trust boundary. Reject before reading
+      // credentials or mutating the request/pool, just like the core router.
+      if (!isRoutableUrl(event.request.url)) return
       tidyPool(pool)
       const connection = await ctx.integration.connection.active(PROVIDER_ID).catch(() => undefined)
       if (connection) {

@@ -1,7 +1,7 @@
 import { REFRESH_BUFFER_MS } from "./constants.ts"
 import { TerminalAuthError, withWorkOSPrefix } from "./http.ts"
 import { isPaidModel } from "./models.ts"
-import { type Logger, type PoolFile, allCandidates, clineUserKey, findAccount, findByToken, hasNoCredits, isAuthFailure, isRoutableUrl, markAccountLimited, markNoCredits, maskToken, modelLimitUntil, modelOfRequest, parseRetryAfterFromBody, parseRetryAfterMs, pinSession, pruneLimits, quarantineAccount, refreshAccount, sameAccount, savePoolFile, selectAccount, stripWorkOSPrefix, tokenOf } from "./pool.ts"
+import { type Logger, type PoolFile, allCandidates, clineUserKey, cooldownUntil, findAccount, findByToken, isAvailable, isAuthFailure, isRoutableUrl, markAccountLimited, markNoCredits, maskToken, modelOfRequest, parseRetryAfterFromBody, parseRetryAfterMs, pinSession, pruneLimits, quarantineAccount, refreshAccount, sameAccount, savePoolFile, selectAccount, stripWorkOSPrefix, tokenOf } from "./pool.ts"
 
 export type RouterOptions = {
   /** Session of the request: the account that serves it becomes the
@@ -51,35 +51,71 @@ export function createRoutedFetch(
     }
     if (!isRoutableUrl(url)) return origFetch(input, init)
 
-    // Normalize to replayable parts (chat bodies are small JSON).
-    let method = "POST"
-    let headers = new Headers()
+    // Let Request apply fetch's override rules (including replacement, not
+    // merging, of headers). Explicit streaming init bodies are single-shot:
+    // pass them through untouched rather than risk replaying partial data.
+    if (init?.body instanceof ReadableStream) return origFetch(input, init)
+    const request = new Request(input, init)
+    const method = request.method
+    const headers = new Headers(request.headers)
+    const signal = request.signal
+    signal.throwIfAborted()
     let body: ArrayBuffer | null = null
-    let signal: AbortSignal | undefined
-    try {
-      if (typeof input === "string" || input instanceof URL) {
-        method = init?.method ?? "POST"
-        headers = new Headers(init?.headers)
-        signal = init?.signal
-        const b = init?.body
-        if (typeof b === "string") body = new TextEncoder().encode(b).buffer as ArrayBuffer
-        else if (b instanceof ArrayBuffer) body = b
-        else if (ArrayBuffer.isView(b)) body = b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer
-        else if (b != null) {
-          // Non-replayable stream body: single attempt, no rotation.
-          return origFetch(input, init)
+    if (request.body) {
+      const reader = request.body.getReader()
+      let onAbort: () => void = () => {}
+      const aborted = new Promise<never>((_, reject) => {
+        onAbort = () => {
+          reject(signal.reason)
+          void reader.cancel(signal.reason).catch(() => {})
         }
-      } else {
-        const req = input as Request
-        method = req.method ?? init?.method ?? "POST"
-        headers = new Headers(req.headers)
-        for (const [k, v] of new Headers(init?.headers ?? {})) headers.set(k, v)
-        signal = init?.signal ?? req.signal
-        const buf = await req.clone().arrayBuffer().catch(() => null)
-        body = buf && buf.byteLength > 0 ? buf : null
+        signal.addEventListener("abort", onAbort, { once: true })
+        if (signal.aborted) onAbort()
+      })
+      try {
+        body = await Promise.race([
+          (async () => {
+            try {
+              const chunks: Uint8Array[] = []
+              let length = 0
+              while (true) {
+                const { done, value } = await reader.read()
+                if (done) break
+                chunks.push(value)
+                length += value.byteLength
+              }
+              const bytes = new Uint8Array(length)
+              let offset = 0
+              for (const chunk of chunks) {
+                bytes.set(chunk, offset)
+                offset += chunk.length
+              }
+              return bytes.buffer
+            } finally {
+              reader.releaseLock()
+            }
+          })(),
+          aborted,
+        ])
+      } finally {
+        signal.removeEventListener("abort", onAbort)
       }
-    } catch {
-      return origFetch(input, init)
+    }
+    signal.throwIfAborted()
+    const replayInit: RequestInit = {
+      ...init,
+      method,
+      headers,
+      body,
+      signal,
+      cache: request.cache,
+      credentials: request.credentials,
+      integrity: request.integrity,
+      keepalive: request.keepalive,
+      mode: request.mode,
+      redirect: request.redirect,
+      referrer: request.referrer,
+      referrerPolicy: request.referrerPolicy,
     }
 
     const incomingAuth = headers.get("authorization") ?? ""
@@ -105,7 +141,12 @@ export function createRoutedFetch(
 
     const readSnippet = async (res: Response): Promise<string> => {
       try {
-        return ((await res.clone().text().catch(() => "")) || "").slice(0, 300)
+        return (
+          (await res
+            .clone()
+            .text()
+            .catch(() => "")) || ""
+        ).slice(0, 300)
       } catch {
         return ""
       }
@@ -150,19 +191,21 @@ export function createRoutedFetch(
     // Stop when the caller cancelled, and bound the wait for headers so a
     // stuck retry can't hold (or bill) the turn indefinitely.
     let sends = 0
-    const send = async (token: string): Promise<Response> => {
+    const send = async (token?: string): Promise<Response> => {
+      signal.throwIfAborted()
       const h = new Headers(headers)
-      h.set("authorization", `Bearer ${withWorkOSPrefix(token)}`)
-      if (sends++ === 0) return origFetch(url, { method, headers: h, body, signal })
-      if (signal?.aborted) throw signal.reason ?? new DOMException("The operation was aborted.", "AbortError")
+      if (token) h.set("authorization", `Bearer ${withWorkOSPrefix(token)}`)
+      const sendInit = { ...replayInit, headers: h, body: body?.slice(0) ?? null }
+      if (sends++ === 0) return origFetch(url, sendInit)
       const ctrl = new AbortController()
-      signal?.addEventListener("abort", () => ctrl.abort(signal.reason), { once: true })
       const timer = setTimeout(
         () => ctrl.abort(new Error(`cline-free: retry got no response within ${RETRY_HEADERS_TIMEOUT_MS / 1000}s`)),
         RETRY_HEADERS_TIMEOUT_MS,
       )
       try {
-        return await origFetch(url, { method, headers: h, body, signal: ctrl.signal })
+        // any() keeps caller cancellation connected during response streaming,
+        // without leaking a per-retry event listener after headers arrive.
+        return await origFetch(url, { ...sendInit, signal: AbortSignal.any([signal, ctrl.signal]) })
       } finally {
         clearTimeout(timer)
       }
@@ -172,9 +215,7 @@ export function createRoutedFetch(
       let token: string
       let accountId: string | undefined
       const firstAcc = first ? findAccount(pool, first.accountId) : undefined
-      const firstLimited = firstAcc
-        ? (modelLimitUntil(firstAcc, reqModel) ?? 0) > now || (paid && hasNoCredits(pool, firstAcc.id))
-        : false
+      const firstLimited = firstAcc ? !isAvailable(pool, firstAcc, now, reqModel) || !!firstAcc.authFailedAt : false
       if (attempt === 0 && first && !firstLimited) {
         ;({ token, accountId } = first)
       } else {
@@ -242,7 +283,10 @@ export function createRoutedFetch(
             staleCache = true
             accountId = owner.id
             acc = owner
-            log("info", `cline-free: stale cached token (${maskToken(token)}) matched to ${owner.label ?? owner.id} by user key — replaying with its current session`)
+            log(
+              "info",
+              `cline-free: stale cached token (${maskToken(token)}) matched to ${owner.label ?? owner.id} by user key — replaying with its current session`,
+            )
           }
         }
         if (staleCache && acc) {
@@ -254,7 +298,10 @@ export function createRoutedFetch(
           }
           if (res2.status !== 401 && res2.status !== 403 && res2.status !== 429) {
             served(acc.id)
-            log("info", `cline-free: request recovered on ${acc.label ?? acc.id} with its current session (stale cached token)`)
+            log(
+              "info",
+              `cline-free: request recovered on ${acc.label ?? acc.id} with its current session (stale cached token)`,
+            )
             await drain(res).catch(() => {})
             return res2
           }
@@ -264,7 +311,14 @@ export function createRoutedFetch(
             lastRes = keepForReturn(res2)
             await drain(res).catch(() => {})
             await drain(res2).catch(() => {})
-            markAccountLimited(pool, acc.id, parseRetryAfterMs(res2) ?? parseRetryAfterFromBody(detail2), log, detail2, reqModel)
+            markAccountLimited(
+              pool,
+              acc.id,
+              parseRetryAfterMs(res2) ?? parseRetryAfterFromBody(detail2),
+              log,
+              detail2,
+              reqModel,
+            )
             continue
           }
           // Current token is dead too: fall through to the forced refresh.
@@ -287,7 +341,10 @@ export function createRoutedFetch(
               if (res2.status !== 401 && res2.status !== 403 && res2.status !== 429) {
                 served(acc.id)
                 if (attempt > 0)
-                  log("info", `cline-free: request recovered on ${acc.label ?? acc.id} after re-auth (attempt ${attempt + 1})`)
+                  log(
+                    "info",
+                    `cline-free: request recovered on ${acc.label ?? acc.id} after re-auth (attempt ${attempt + 1})`,
+                  )
                 else log("info", `cline-free: request recovered on ${acc.label ?? acc.id} after silent refresh`)
                 await drain(res).catch(() => {})
                 return res2
@@ -298,7 +355,14 @@ export function createRoutedFetch(
                 lastRes = keepForReturn(res2)
                 await drain(res).catch(() => {})
                 await drain(res2).catch(() => {})
-                markAccountLimited(pool, acc.id, parseRetryAfterMs(res2) ?? parseRetryAfterFromBody(detail2), log, detail2, reqModel)
+                markAccountLimited(
+                  pool,
+                  acc.id,
+                  parseRetryAfterMs(res2) ?? parseRetryAfterFromBody(detail2),
+                  log,
+                  detail2,
+                  reqModel,
+                )
                 continue
               }
               const snippet2 = await readSnippet(res2)
@@ -319,7 +383,11 @@ export function createRoutedFetch(
             if (e instanceof TerminalAuthError) {
               quarantineAccount(pool, acc, e.message, log)
             } else {
-              log("warn", `cline-free: token refresh failed for ${acc.label ?? acc.id}: ${e instanceof Error ? e.message : String(e)} — trying next account`, { accountId: acc.id })
+              log(
+                "warn",
+                `cline-free: token refresh failed for ${acc.label ?? acc.id}: ${e instanceof Error ? e.message : String(e)} — trying next account`,
+                { accountId: acc.id },
+              )
               acc.lastError = "refresh failed"
               void savePoolFile(pool).catch(() => {})
             }
@@ -349,7 +417,11 @@ export function createRoutedFetch(
 
       if (res.status !== 429) {
         served(accountId)
-        if (attempt > 0) log("info", `cline-free: request recovered on ${findAccount(pool, accountId)?.label ?? "fallback account"} after 429/402/re-auth (attempt ${attempt + 1})`)
+        if (attempt > 0)
+          log(
+            "info",
+            `cline-free: request recovered on ${findAccount(pool, accountId)?.label ?? "fallback account"} after 429/402/re-auth (attempt ${attempt + 1})`,
+          )
         return res
       }
 
@@ -372,32 +444,41 @@ export function createRoutedFetch(
         .filter((a) => a.authFailedAt)
         .map((a) => `${a.label ?? a.id}`)
         .join(", ")
-      log("error", `cline-free: all ${tried.size} account(s) rejected auth (401/403). ${quarantined ? `Quarantined: ${quarantined}. ` : ""}Run /connect → cline-free and log in again; rotation continues when a healthy account exists.`)
+      log(
+        "error",
+        `cline-free: all ${tried.size} account(s) rejected auth (401/403). ${quarantined ? `Quarantined: ${quarantined}. ` : ""}Run /connect → cline-free and log in again; rotation continues when a healthy account exists.`,
+      )
       return lastAuthRes
     }
 
     if (lastRes && paid) {
-      log("error", `cline-free: no account could serve paid model ${reqModel} (all ${tried.size} tried are out of Cline credits or rate limited). Add credits or another Cline account via /connect.`)
+      log(
+        "error",
+        `cline-free: no account could serve paid model ${reqModel} (all ${tried.size} tried are out of Cline credits or rate limited). Add credits or another Cline account via /connect.`,
+      )
       return lastRes
     }
 
     if (lastRes) {
       const waiting = pool.accounts
-        .filter((a) => a.limitedUntil && a.limitedUntil > Date.now())
-        .map((a) => `${a.label ?? a.id}→${new Date(a.limitedUntil!).toISOString()}`)
+        .filter((a) => cooldownUntil(a) > Date.now())
+        .map((a) => `${a.label ?? a.id}→${new Date(cooldownUntil(a)).toISOString()}`)
         .join(", ")
-      log("error", `cline-free: all ${tried.size} account(s) hit 429 daily quota. ${waiting ? `Cooling: ${waiting}. ` : ""}Add another Cline account via /connect to keep going.`)
+      log(
+        "error",
+        `cline-free: all ${tried.size} account(s) hit 429 daily quota. ${waiting ? `Cooling: ${waiting}. ` : ""}Add another Cline account via /connect to keep going.`,
+      )
       // Replay once on the earliest-reset account (for this model when
       // known) so the caller sees the real server error body instead of a
       // synthesized one. Only rotation candidates qualify: an account that
       // needs re-login would answer 401 and hide the real quota error.
-      const resetOf = (a: PoolFile["accounts"][number]) => modelLimitUntil(a, reqModel) ?? a.limitedUntil ?? 0
+      const resetOf = (a: PoolFile["accounts"][number]) => cooldownUntil(a, reqModel)
       const earliest = allCandidates(pool).sort((a, b) => resetOf(a) - resetOf(b))[0]
       const t = earliest ? tokenOf(earliest) : undefined
       if (earliest && t) return await send(t)
       return lastRes
     }
-    return origFetch(input, init)
+    return send(incomingToken || undefined)
   }) as typeof fetch
 }
 
