@@ -240,7 +240,9 @@ export function isAuthFailure(status: number, snippet: string): boolean {
 // process wrote. Save only the delta against it under the same mutex as token
 // refresh. Thus a metadata save can never write an unchanged stale credential.
 const baselines = new WeakMap<PoolFile, PoolFile>()
-const revivals = new WeakMap<PoolFile, Set<string>>()
+// Each explicit login has its own intent, even for the same identity. A save
+// must not consume a newer login that arrived while its snapshot was in I/O.
+const revivals = new WeakMap<PoolFile, Map<string, symbol>>()
 const copy = <T,>(value: T): T => structuredClone(value)
 const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
 const emptyPool = (): PoolFile => ({ version: 1, accounts: [] })
@@ -293,21 +295,37 @@ const healthKeys = new Set([
 ])
 const credentials = (a: PoolAccount) => credentialKeys.map((k) => a[k])
 
+/** Observing peer credentials does not mean we observed its other metadata. */
+function rebaseCredentials(pool: PoolFile, peer: PoolAccount): void {
+  const baseline = copy(baselines.get(pool) ?? emptyPool())
+  const observed = baseline.accounts.find((a) => a.id === peer.id)
+  if (observed) {
+    for (const k of credentialKeys) {
+      if (peer[k] === undefined) delete observed[k]
+      else (observed as Record<string, unknown>)[k] = peer[k]
+    }
+  } else baseline.accounts.push(copy(peer))
+  baselines.set(pool, baseline)
+}
+
 /** Three-way merge. Credentials are an atomic compare-and-swap group; stale
- * health reports for a replaced credential are ignored. Model entries merge
- * independently, and deletion applies only to a value we actually observed. */
-function mergeAccount(base: PoolAccount, local: PoolAccount, disk: PoolAccount): PoolAccount {
+ * health reports for a replaced credential are ignored. An explicit login
+ * replaces credentials and their health as a unit, not unrelated metadata.
+ * Model entries merge independently, and deletion applies only to a value we
+ * actually observed. */
+function mergeAccount(base: PoolAccount, local: PoolAccount, disk: PoolAccount, explicitLogin: boolean): PoolAccount {
   const result = copy(disk)
   const peerRotated = !equal(credentials(base), credentials(disk))
-  if (!peerRotated && !equal(credentials(base), credentials(local))) {
-    for (const k of credentialKeys) {
-      if (local[k] === undefined) delete result[k]
-      else (result as Record<string, unknown>)[k] = local[k]
+  if (explicitLogin || (!peerRotated && !equal(credentials(base), credentials(local)))) {
+    for (const k of explicitLogin ? [...credentialKeys, ...healthKeys] : credentialKeys) {
+      const value = (local as Record<string, unknown>)[k]
+      if (value === undefined) delete (result as Record<string, unknown>)[k]
+      else (result as Record<string, unknown>)[k] = copy(value)
     }
   }
   for (const k of new Set([...Object.keys(base), ...Object.keys(local)])) {
     if (credentialKeys.includes(k as (typeof credentialKeys)[number]) || k === "id") continue
-    if (peerRotated && healthKeys.has(k)) continue
+    if ((peerRotated || explicitLogin) && healthKeys.has(k)) continue
     const b = (base as Record<string, unknown>)[k]
     const l = (local as Record<string, unknown>)[k]
     if (equal(b, l)) continue
@@ -333,11 +351,11 @@ function mergeAccount(base: PoolAccount, local: PoolAccount, disk: PoolAccount):
   return result
 }
 
-function mergePool(base: PoolFile, local: PoolFile, disk: PoolFile, revived = new Set<string>()): PoolFile {
+function mergePool(base: PoolFile, local: PoolFile, disk: PoolFile, revived = new Map<string, symbol>()): PoolFile {
   const result = copy(disk)
   const removed = new Set(disk.removed)
   for (const r of base.removed ?? []) if (!local.removed?.includes(r)) removed.delete(r)
-  for (const r of revived) removed.delete(r)
+  for (const r of revived.keys()) removed.delete(r)
   for (const r of local.removed ?? []) if (!base.removed?.includes(r)) removed.add(r)
   result.removed = [...removed].slice(-MAX_REMOVED)
   if (!result.removed.length) delete result.removed
@@ -350,7 +368,7 @@ function mergePool(base: PoolFile, local: PoolFile, disk: PoolFile, revived = ne
     const old = before.get(a.id)
     const idx = result.accounts.findIndex((d) => d.id === a.id)
     if (old) {
-      if (idx >= 0) result.accounts[idx] = mergeAccount(old, a, result.accounts[idx])
+      if (idx >= 0) result.accounts[idx] = mergeAccount(old, a, result.accounts[idx], revived.has(identityHash(tokenOf(a) ?? "")))
       else if (revived.has(identityHash(tokenOf(a) ?? ""))) result.accounts.push(copy(a))
       // Only an explicit login may resurrect a record removed by a peer.
     } else if (idx < 0) {
@@ -385,7 +403,7 @@ async function persistPoolFile(pool: PoolFile, file: string): Promise<void> {
   const { writeFile, chmod, rename, unlink } = await import("node:fs/promises")
   const base = baselines.get(pool) ?? emptyPool()
   const snapshot = copy(pool)
-  const revived = new Set(revivals.get(pool))
+  const revived = new Map(revivals.get(pool))
   const merged = mergePool(base, snapshot, await readPoolFile(file), revived)
   const tmp = `${file}.tmp.${process.pid}.${randomUUID()}`
   try {
@@ -397,9 +415,11 @@ async function persistPoolFile(pool: PoolFile, file: string): Promise<void> {
     throw e
   }
   // Preserve mutations made while disk I/O was pending for the next save.
-  adoptPool(pool, mergePool(snapshot, pool, merged, new Set(revivals.get(pool))))
+  adoptPool(pool, mergePool(snapshot, pool, merged, new Map(revivals.get(pool))))
   baselines.set(pool, copy(merged))
-  for (const r of revived) revivals.get(pool)?.delete(r)
+  for (const [r, intent] of revived) {
+    if (revivals.get(pool)?.get(r) === intent) revivals.get(pool)?.delete(r)
+  }
 }
 
 export async function savePoolFile(pool: PoolFile): Promise<void> {
@@ -779,10 +799,11 @@ export async function fetchUserEmail(accessToken: string): Promise<string | unde
 export type Logger = (level: "info" | "warn" | "error", message: string, extra?: Record<string, unknown>) => void
 
 /** Clear all health state: cooldowns, errors, and auth quarantine.
- * Called whenever fresh credentials land for an account. */
-export function clearAuthHealth(acc: PoolAccount): void {
+ * Explicit logins reset everything; token refreshes preserve per-model
+ * quotas because those belong to the Cline user, not the access token. */
+export function clearAuthHealth(acc: PoolAccount, options: { preserveModelLimits?: boolean } = {}): void {
   acc.limitsVersion = 2
-  delete acc.modelLimits
+  if (!options.preserveModelLimits) delete acc.modelLimits
   delete acc.limitedUntil
   delete acc.lastError
   delete acc.authFailedAt
@@ -882,8 +903,8 @@ export function rememberRemoval(pool: PoolFile, token: string): void {
 /** An explicit login (device, CLI import, add-token) brings the user back. */
 export function forgetRemoval(pool: PoolFile, token: string): void {
   const id = identityHash(token)
-  const revived = revivals.get(pool) ?? new Set<string>()
-  revived.add(id)
+  const revived = revivals.get(pool) ?? new Map<string, symbol>()
+  revived.set(id, Symbol())
   revivals.set(pool, revived)
   if (!pool.removed) return
   pool.removed = pool.removed.filter((r) => r !== id)
@@ -911,12 +932,6 @@ export async function refreshAccount(pool: PoolFile, acc: PoolAccount, log: Logg
     return
   }
   const p = (async (): Promise<void> => {
-    const refreshToken = acc.refresh
-    if (!refreshToken) {
-      throw new TerminalAuthError(
-        `account ${acc.label ?? acc.id} has no refresh token — re-login required (/connect → cline-free)`,
-      )
-    }
     await lockPoolFile(file, async () => {
       // A peer process may have refreshed while we waited for the lock:
       // adopt its tokens instead of replaying our (now stale) refresh token.
@@ -941,36 +956,44 @@ export async function refreshAccount(pool: PoolFile, acc: PoolAccount, log: Logg
         peer.expires - Date.now() >= REFRESH_BUFFER_MS &&
         peerTok &&
         mine &&
-        (stripWorkOSPrefix(peerTok) !== stripWorkOSPrefix(mine) || peer.refresh !== refreshToken)
+        (stripWorkOSPrefix(peerTok) !== stripWorkOSPrefix(mine) || peer.refresh !== acc.refresh)
       ) {
         acc.access = peer.access
         acc.apiKey = peer.apiKey
         acc.refresh = peer.refresh
         acc.expires = peer.expires
-        clearAuthHealth(acc)
+        // Quotas belong to the user. Keep local reports and any model limits
+        // learned by the peer after our snapshot; adopting only its token
+        // would otherwise make those capped models immediately selectable.
+        const modelLimits = { ...acc.modelLimits }
+        for (const [model, until] of Object.entries(peer.modelLimits ?? {})) {
+          modelLimits[model] = Math.max(modelLimits[model] ?? 0, until)
+        }
+        if (Object.keys(modelLimits).length) acc.modelLimits = modelLimits
+        clearAuthHealth(acc, { preserveModelLimits: true })
+        rebaseCredentials(pool, peer)
         log("info", `cline-free: adopted peer-refreshed tokens for ${acc.label ?? acc.id}`)
         return
       }
       // Even if the peer token has already expired, its rotated refresh
-      // credential is the only one safe to use.
-      const next = await refreshClineToken(peerChanged ? (peer?.refresh ?? refreshToken) : refreshToken, {
+      // credential is the only one safe to use. Select only after locking and
+      // reconciliation: a queued save may have adopted it and rebased the pool.
+      const refreshToken = peerChanged ? (peer?.refresh ?? acc.refresh) : acc.refresh
+      if (!refreshToken) {
+        throw new TerminalAuthError(
+          `account ${acc.label ?? acc.id} has no refresh token — re-login required (/connect → cline-free)`,
+        )
+      }
+      const next = await refreshClineToken(refreshToken, {
         label: acc.label ?? acc.id,
         log,
       })
       acc.access = next.access
       acc.refresh = next.refresh
       acc.expires = next.expires
-      clearAuthHealth(acc)
+      clearAuthHealth(acc, { preserveModelLimits: true })
       // Rebase the credential group to the locked disk record.
-      const baseline = copy(baselines.get(pool) ?? emptyPool())
-      const idx = baseline.accounts.findIndex((a) => a.id === acc.id)
-      if (peer && idx >= 0) {
-        for (const k of credentialKeys) {
-          if (peer[k] === undefined) delete baseline.accounts[idx][k]
-          else (baseline.accounts[idx] as Record<string, unknown>)[k] = peer[k]
-        }
-      } else if (peer) baseline.accounts.push(copy(peer))
-      baselines.set(pool, baseline)
+      if (peer) rebaseCredentials(pool, peer)
       await persistPoolFile(pool, file)
     })
   })()

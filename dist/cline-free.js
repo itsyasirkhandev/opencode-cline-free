@@ -793,18 +793,30 @@ var healthKeys = /* @__PURE__ */ new Set([
   "lastProbeAt"
 ]);
 var credentials = (a) => credentialKeys.map((k) => a[k]);
-function mergeAccount(base, local, disk) {
+function rebaseCredentials(pool, peer) {
+  const baseline = copy(baselines.get(pool) ?? emptyPool());
+  const observed = baseline.accounts.find((a) => a.id === peer.id);
+  if (observed) {
+    for (const k of credentialKeys) {
+      if (peer[k] === void 0) delete observed[k];
+      else observed[k] = peer[k];
+    }
+  } else baseline.accounts.push(copy(peer));
+  baselines.set(pool, baseline);
+}
+function mergeAccount(base, local, disk, explicitLogin) {
   const result = copy(disk);
   const peerRotated = !equal(credentials(base), credentials(disk));
-  if (!peerRotated && !equal(credentials(base), credentials(local))) {
-    for (const k of credentialKeys) {
-      if (local[k] === void 0) delete result[k];
-      else result[k] = local[k];
+  if (explicitLogin || !peerRotated && !equal(credentials(base), credentials(local))) {
+    for (const k of explicitLogin ? [...credentialKeys, ...healthKeys] : credentialKeys) {
+      const value = local[k];
+      if (value === void 0) delete result[k];
+      else result[k] = copy(value);
     }
   }
   for (const k of /* @__PURE__ */ new Set([...Object.keys(base), ...Object.keys(local)])) {
     if (credentialKeys.includes(k) || k === "id") continue;
-    if (peerRotated && healthKeys.has(k)) continue;
+    if ((peerRotated || explicitLogin) && healthKeys.has(k)) continue;
     const b = base[k];
     const l = local[k];
     if (equal(b, l)) continue;
@@ -830,11 +842,11 @@ function mergeAccount(base, local, disk) {
   }
   return result;
 }
-function mergePool(base, local, disk, revived = /* @__PURE__ */ new Set()) {
+function mergePool(base, local, disk, revived = /* @__PURE__ */ new Map()) {
   const result = copy(disk);
   const removed = new Set(disk.removed);
   for (const r of base.removed ?? []) if (!local.removed?.includes(r)) removed.delete(r);
-  for (const r of revived) removed.delete(r);
+  for (const r of revived.keys()) removed.delete(r);
   for (const r of local.removed ?? []) if (!base.removed?.includes(r)) removed.add(r);
   result.removed = [...removed].slice(-MAX_REMOVED);
   if (!result.removed.length) delete result.removed;
@@ -845,7 +857,7 @@ function mergePool(base, local, disk, revived = /* @__PURE__ */ new Set()) {
     const old = before.get(a.id);
     const idx = result.accounts.findIndex((d) => d.id === a.id);
     if (old) {
-      if (idx >= 0) result.accounts[idx] = mergeAccount(old, a, result.accounts[idx]);
+      if (idx >= 0) result.accounts[idx] = mergeAccount(old, a, result.accounts[idx], revived.has(identityHash(tokenOf(a) ?? "")));
       else if (revived.has(identityHash(tokenOf(a) ?? ""))) result.accounts.push(copy(a));
     } else if (idx < 0) {
       const token = tokenOf(a);
@@ -874,7 +886,7 @@ async function persistPoolFile(pool, file) {
   const { writeFile, chmod, rename, unlink } = await import("node:fs/promises");
   const base = baselines.get(pool) ?? emptyPool();
   const snapshot = copy(pool);
-  const revived = new Set(revivals.get(pool));
+  const revived = new Map(revivals.get(pool));
   const merged = mergePool(base, snapshot, await readPoolFile(file), revived);
   const tmp = `${file}.tmp.${process.pid}.${randomUUID()}`;
   try {
@@ -886,9 +898,11 @@ async function persistPoolFile(pool, file) {
     });
     throw e;
   }
-  adoptPool(pool, mergePool(snapshot, pool, merged, new Set(revivals.get(pool))));
+  adoptPool(pool, mergePool(snapshot, pool, merged, new Map(revivals.get(pool))));
   baselines.set(pool, copy(merged));
-  for (const r of revived) revivals.get(pool)?.delete(r);
+  for (const [r, intent] of revived) {
+    if (revivals.get(pool)?.get(r) === intent) revivals.get(pool)?.delete(r);
+  }
 }
 async function savePoolFile(pool) {
   const file = poolFilePath();
@@ -1197,9 +1211,9 @@ async function fetchUserEmail(accessToken) {
     return void 0;
   }
 }
-function clearAuthHealth(acc) {
+function clearAuthHealth(acc, options = {}) {
   acc.limitsVersion = 2;
-  delete acc.modelLimits;
+  if (!options.preserveModelLimits) delete acc.modelLimits;
   delete acc.limitedUntil;
   delete acc.lastError;
   delete acc.authFailedAt;
@@ -1280,8 +1294,8 @@ function rememberRemoval(pool, token) {
 }
 function forgetRemoval(pool, token) {
   const id = identityHash(token);
-  const revived = revivals.get(pool) ?? /* @__PURE__ */ new Set();
-  revived.add(id);
+  const revived = revivals.get(pool) ?? /* @__PURE__ */ new Map();
+  revived.set(id, /* @__PURE__ */ Symbol());
   revivals.set(pool, revived);
   if (!pool.removed) return;
   pool.removed = pool.removed.filter((r) => r !== id);
@@ -1299,12 +1313,6 @@ async function refreshAccount(pool, acc, log2) {
     return;
   }
   const p = (async () => {
-    const refreshToken = acc.refresh;
-    if (!refreshToken) {
-      throw new TerminalAuthError(
-        `account ${acc.label ?? acc.id} has no refresh token \u2014 re-login required (/connect \u2192 cline-free)`
-      );
-    }
     await lockPoolFile(file, async () => {
       const disk = await readPoolFile(file);
       const peer = disk.accounts.find((a) => a.id === acc.id);
@@ -1317,32 +1325,36 @@ async function refreshAccount(pool, acc, log2) {
       const peerChanged = !!peer && (!observed || !equal(credentials(peer), credentials(observed)));
       const peerTok = peer ? tokenOf(peer) : void 0;
       const mine = tokenOf(acc);
-      if (peerChanged && peer?.refresh && peer?.expires && peer.expires - Date.now() >= REFRESH_BUFFER_MS && peerTok && mine && (stripWorkOSPrefix(peerTok) !== stripWorkOSPrefix(mine) || peer.refresh !== refreshToken)) {
+      if (peerChanged && peer?.refresh && peer?.expires && peer.expires - Date.now() >= REFRESH_BUFFER_MS && peerTok && mine && (stripWorkOSPrefix(peerTok) !== stripWorkOSPrefix(mine) || peer.refresh !== acc.refresh)) {
         acc.access = peer.access;
         acc.apiKey = peer.apiKey;
         acc.refresh = peer.refresh;
         acc.expires = peer.expires;
-        clearAuthHealth(acc);
+        const modelLimits = { ...acc.modelLimits };
+        for (const [model, until] of Object.entries(peer.modelLimits ?? {})) {
+          modelLimits[model] = Math.max(modelLimits[model] ?? 0, until);
+        }
+        if (Object.keys(modelLimits).length) acc.modelLimits = modelLimits;
+        clearAuthHealth(acc, { preserveModelLimits: true });
+        rebaseCredentials(pool, peer);
         log2("info", `cline-free: adopted peer-refreshed tokens for ${acc.label ?? acc.id}`);
         return;
       }
-      const next = await refreshClineToken(peerChanged ? peer?.refresh ?? refreshToken : refreshToken, {
+      const refreshToken = peerChanged ? peer?.refresh ?? acc.refresh : acc.refresh;
+      if (!refreshToken) {
+        throw new TerminalAuthError(
+          `account ${acc.label ?? acc.id} has no refresh token \u2014 re-login required (/connect \u2192 cline-free)`
+        );
+      }
+      const next = await refreshClineToken(refreshToken, {
         label: acc.label ?? acc.id,
         log: log2
       });
       acc.access = next.access;
       acc.refresh = next.refresh;
       acc.expires = next.expires;
-      clearAuthHealth(acc);
-      const baseline = copy(baselines.get(pool) ?? emptyPool());
-      const idx = baseline.accounts.findIndex((a) => a.id === acc.id);
-      if (peer && idx >= 0) {
-        for (const k of credentialKeys) {
-          if (peer[k] === void 0) delete baseline.accounts[idx][k];
-          else baseline.accounts[idx][k] = peer[k];
-        }
-      } else if (peer) baseline.accounts.push(copy(peer));
-      baselines.set(pool, baseline);
+      clearAuthHealth(acc, { preserveModelLimits: true });
+      if (peer) rebaseCredentials(pool, peer);
       await persistPoolFile(pool, file);
     });
   })();
@@ -2416,6 +2428,7 @@ var setup = async (ctx) => {
   await ctx.session.hook(
     "http.request",
     async (event) => {
+      if (!isRoutableUrl(event.request.url)) return;
       tidyPool(pool);
       const connection = await ctx.integration.connection.active(PROVIDER_ID).catch(() => void 0);
       if (connection) {
