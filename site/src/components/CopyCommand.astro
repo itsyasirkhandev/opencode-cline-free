@@ -1,4 +1,6 @@
 ---
+import { Check, Copy } from "@lucide/astro"
+
 type Props = { command: string; label?: string }
 const { command, label = "Copy command" } = Astro.props
 ---
@@ -12,8 +14,8 @@ const { command, label = "Copy command" } = Astro.props
     data-copy={command}
     aria-label={label}
   >
-    <svg class="size-4 transition-opacity duration-150 group-data-copied:opacity-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="13" height="13" x="9" y="9" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
-    <svg class="absolute size-4 text-orange-400 opacity-0 transition-opacity duration-150 group-data-copied:opacity-100" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg>
+    <Copy class="size-4 transition-opacity duration-150 group-data-copied:opacity-0" aria-hidden="true" />
+    <Check class="absolute size-4 text-orange-400 opacity-0 transition-opacity duration-150 group-data-copied:opacity-100" aria-hidden="true" />
   </button>
 </div>
 
