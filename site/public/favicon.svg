@@ -1,7 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
-  <title>OpenCode Cline Free — open circuit logo</title>
-  <rect width="64" height="64" rx="16" fill="#171717"/>
-  <path d="M47 14H27L14 27V39L27 52H47" stroke="#fb923c" stroke-width="6" stroke-linecap="square" stroke-linejoin="bevel"/>
-  <path d="m27 25 9 9-9 9" stroke="#fafafa" stroke-width="5" stroke-linecap="square" stroke-linejoin="miter"/>
-  <path d="M42 43h8" stroke="#fafafa" stroke-width="5" stroke-linecap="square"/>
+  <title>OpenCode Cline Free — Free Flight logo</title>
+  <rect width="64" height="64" rx="14" fill="#171717"/>
+  <path d="m4.5 32 5.6-6.3 4.1 6.3H4.5Z" fill="#fb923c"/>
+  <path d="M10.1 25.7h14l-9 15.3-5-15.3Z" fill="#fafafa"/>
+  <path fill-rule="evenodd" d="M25.7 18.5 56.3 6.4 29.6 49.1 15.1 41l10.6-22.5Zm.7 9.1 1.8-1.9 6.3 6.2-6.3 6.5-1.8-1.9 4.6-4.6-4.6-4.3Z" fill="#fb923c"/>
+  <path d="m30.7 49.2 8.4-11 20.6 17.6-15.4 1.8-13.6-8.4Z" fill="#fb923c"/>
 </svg>
