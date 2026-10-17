@@ -20,3 +20,11 @@
 - **Panel depth** → fixed surface lightness plus one 12px panel radius and one shadow role — reduce competing outlines without removing control affordances. (2026-10-17)
 - **Body paragraph rhythm** → preserve surrounding utility-based paragraph spacing while setting line height to 1.75 — product-specific house-rule choice to retain the requested layout, not a WCAG exception. (2026-10-17)
 - **Contrast evidence** → sampled DOM text pairs and measured ratios are in REPORT.md section 4 — recompute whenever these palette roles change. (2026-10-17)
+
+## Approved Launchpad direction (2026-10-17)
+These supersede the earlier polish-only layout choices: owner selected Launchpad and explicitly requested direct-main integration.
+- **Visual hierarchy** → selected warm-charcoal/orange Launchpad composition, replacing the previous landing surface; original logo asset and metadata retained.
+- **Setup instructions** → independent native pressed buttons reveal pre-rendered panels; not composite ARIA tabs. Keyboard changes stay instant and focus stays on the selected button.
+- **Copy feedback** → reuse existing CopyCommand component, restyled with visible Copy/Copied/failure text and persistent status region; no focus-stealing toast.
+- **Motion** → one-time 250ms entrance with 50ms stagger; pointer-only 160ms press scale; reduced motion uses 150ms opacity only. No logo animation or looping effects.
+- **Tutorial** → informative audio-bearing setup video confirmed by owner; click-to-play, privacy-enhanced iframe, 16:9 reserved size and external fallback. Captions unavailable; tracked as unresolved HIGH issue, not represented as conformant.
