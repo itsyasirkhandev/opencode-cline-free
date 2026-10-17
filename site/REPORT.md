@@ -8,11 +8,11 @@ Adapted from the upstream `docs/en/templates/REPORT.md`, A11Y.md version 2.4.0. 
 
 - **Feature/Epic:** Adapt the hero to opencode-cline-free messaging and feature icons.
 - **Test Date:** 10/17/2026
-- **Covers interface as of:** Plugin-content follow-up based on main `1362fb7d895bd868c791b6430b4e000e4d78bc47`; source and report are updated together.
+- **Covers interface as of:** Install-button contrast correction based on main `47253830ec75085f1fe216b6a8add1fc89cc17af`; source and report are updated together.
 - **Standard version:** 2.4.0 — https://github.com/fecarrico/A11Y.md/blob/main/docs/en/A11Y.md
 - **Compliance Status:** ⚠️ CONDITIONAL — production build and static checks passed; known MEDIA-001 prevents an AA conformance claim.
 - **Verification Independence:** self-reported — Notion AI, session 3fcfa123-3036-8078-a1a7-00a9021947cb, also generated the code.
-- **Static gate (`verify-a11y.py`):** PASS (0 errors, 62 warnings) — run on: 2026-10-17; static-only scope, not conformance.
+- **Static gate (`verify-a11y.py`):** PASS (0 errors, 66 warnings) — run on: 2026-10-17; static-only scope, not conformance.
 
 ## 1. Technical Verification (Automated & Semantics)
 
@@ -120,3 +120,22 @@ This follow-up supersedes the earlier no-build limitation for build verification
 - Clean `npm ci`, `npm run check` (zero diagnostics), `tsc --noEmit` and `npm run build` passed. Targeted formatting and `git diff --check` passed.
 - Parsed built HTML to verify one H1, four feature cards, resolved internal anchors, local base-prefixed logo path, paid-credit caveat and absence of template brand names/CDN thumbnails. This is not a visual/browser test.
 - No browser or assistive-technology validation was performed. MEDIA-001 and existing human-review requirements remain open.
+
+## Install-button contrast correction (2026-10-17)
+
+This targeted browser check supersedes earlier no-browser statements for the install CTA only. Full-page visual, keyboard, screen-reader and independent checks remain outstanding; conformance is still conditional.
+
+- Reproduced in the built page: the unlayered global anchor rule overrode Tailwind’s layered foreground utility, producing `rgb(28, 33, 38)` text on the same background (1.00:1).
+- Moved the default anchor styling into `@layer base`, allowing button foreground utilities to win without changing the palette or component API.
+- Verified the production build in sandbox-local headless Chromium using Playwright, with external network resources blocked. Computed text colors were compared with actual screenshot background pixels using WCAG relative luminance.
+
+| Pair                                          | Foreground | Background |   Ratio | Floor | Result |
+| :-------------------------------------------- | :--------- | :--------- | ------: | ----: | :----- |
+| Install CTA default / keyboard focus / mobile | #fcfaf8    | #1c2126    | 15.58:1 | 4.5:1 | ✅     |
+| Install CTA hover, composited background      | #fcfaf8    | #32373b    | 11.56:1 | 4.5:1 | ✅     |
+
+- Verified default, hover and keyboard-focus states at 1440px, plus default at 375px and 320px. Browser confirmed `:focus-visible` on keyboard focus and no document horizontal overflow at the tested widths. This is not full keyboard-flow validation.
+- Clean npm installation, production build, Astro check (zero diagnostics), TypeScript, CSS formatting and diff whitespace checks passed.
+- Evidence is self-reported; no screen-reader, voice-control or full accessibility pass is claimed. MEDIA-001 is unchanged.
+
+Static-gate follow-up: PASS, 0 errors and 66 warnings; known media/self-reported warnings plus HSL-to-hex evidence notices, including the screenshot-measured hover pair.
