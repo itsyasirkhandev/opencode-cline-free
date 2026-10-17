@@ -123,7 +123,7 @@ const nav = [
 <Layout title={title} description={description}>
   <header class="sticky top-0 z-40 border-b border-neutral-800/80 bg-neutral-950/95 pt-[env(safe-area-inset-top)]">
     <div class="mx-auto flex h-16 max-w-5xl items-center justify-between gap-2 px-4 sm:gap-6 sm:px-6">
-      <a href="#top" class="flex min-w-0 items-center gap-2.5 font-mono text-sm font-medium text-neutral-100">
+      <a href="#top" class="flex min-w-0 items-center gap-3 font-mono text-sm font-medium text-neutral-100">
         <img src={logo} width="32" height="32" class="size-8 shrink-0" alt="" aria-hidden="true" />
         <span class="truncate">opencode-cline-free</span>
       </a>
@@ -147,7 +147,7 @@ const nav = [
 
   <main id="main" tabindex="-1" class="outline-none">
     <!-- Hero -->
-    <section id="top" aria-labelledby="hero-title" class="mx-auto grid max-w-5xl gap-14 px-6 pt-16 pb-24 sm:pt-24 lg:grid-cols-2 lg:items-center lg:gap-12">
+    <section id="top" aria-labelledby="hero-title" class="hero mx-auto grid max-w-5xl gap-12 px-6 pt-16 pb-24 sm:pt-24 lg:grid-cols-2 lg:items-center lg:gap-12">
       <div class="min-w-0">
         <p class="enter font-mono text-sm text-orange-400" style="--i:0">OpenCode V2 plugin · v{pkg.version}</p>
         <h1 id="hero-title" class="enter mt-4 text-4xl font-semibold text-balance text-neutral-50 sm:text-5xl" style="--i:1">
@@ -158,8 +158,8 @@ const nav = [
         </p>
         <div class="enter mt-8 max-w-xl" style="--i:3">
           <CopyCommand command={install} label="Copy install command" />
-          <div class="mt-5 flex flex-wrap items-center gap-x-6 gap-y-3 text-sm">
-            <a href="#start" class="inline-flex items-center gap-2 rounded-md bg-neutral-100 px-4 py-2.5 font-medium text-neutral-950 transition-colors duration-150 hover:bg-white">Get started <ArrowRight class="size-4" aria-hidden="true" /></a>
+          <div class="mt-6 flex flex-wrap items-center gap-x-6 gap-y-3 text-sm">
+            <a href="#start" class="primary-action inline-flex items-center gap-2 rounded-md bg-neutral-100 px-4 py-2.5 font-medium text-neutral-950 transition-colors duration-150 hover:bg-white">Get started <ArrowRight class="size-4" aria-hidden="true" /></a>
             <a href={readme} class="inline-flex items-center gap-2 text-neutral-300 underline decoration-neutral-700 underline-offset-4 transition-colors duration-150 hover:text-neutral-50 hover:decoration-neutral-400"><BookOpen class="size-4" aria-hidden="true" /> Read the docs</a>
           </div>
         </div>
@@ -175,14 +175,14 @@ const nav = [
         <h2 id="start-title" class="reveal text-3xl font-semibold text-balance text-neutral-50">Up and running in three steps</h2>
         <ol class="mt-12 grid gap-6 md:grid-cols-3">
           {steps.map((s, i) => (
-            <li class="reveal flex min-w-0 flex-col rounded-xl border border-neutral-800 bg-neutral-900/50 p-6">
+            <li class="step-card reveal flex min-w-0 flex-col rounded-xl border border-neutral-800 bg-neutral-900/50 p-6">
               <div class="flex items-center justify-between gap-4">
-                <span class="grid size-8 place-items-center rounded-full border border-neutral-700 font-mono text-sm text-orange-400 tabular-nums" aria-hidden="true">{i + 1}</span>
+                <span class="step-number grid size-8 place-items-center rounded-full border border-neutral-700 font-mono text-sm text-orange-400 tabular-nums" aria-hidden="true">{i + 1}</span>
                 <s.icon class="size-5 text-neutral-400" stroke-width={1.75} aria-hidden="true" />
               </div>
-              <h3 class="mt-5 text-lg font-medium text-neutral-50">{s.title}</h3>
+              <h3 class="mt-6 text-lg font-medium text-neutral-50">{s.title}</h3>
               <p class="mt-2 flex-1 text-pretty text-neutral-400">{s.body}</p>
-              <code class="mt-5 block rounded-md bg-neutral-950 px-3 py-2 font-mono text-xs wrap-anywhere text-neutral-200">{s.code}</code>
+              <code class="mt-6 block rounded-md bg-neutral-950 px-3 py-2 font-mono text-xs wrap-anywhere text-neutral-200">{s.code}</code>
             </li>
           ))}
         </ol>
@@ -194,10 +194,10 @@ const nav = [
       <div class="mx-auto max-w-5xl px-6 py-24">
         <h2 id="features-title" class="reveal text-3xl font-semibold text-balance text-neutral-50">What you get</h2>
         <p class="reveal mt-4 max-w-2xl text-lg text-pretty text-neutral-400">Everything runs locally inside OpenCode. There’s no extra server and nothing to configure after you sign in.</p>
-        <ul class="mt-12 grid gap-x-10 gap-y-10 sm:grid-cols-2 lg:grid-cols-3">
+        <ul class="mt-12 grid gap-x-8 gap-y-12 sm:grid-cols-2 lg:grid-cols-3">
           {features.map((f) => (
-            <li class="reveal border-t border-neutral-800 pt-6">
-              <span class="mb-4 grid size-10 place-items-center rounded-lg border border-neutral-800 bg-neutral-900 text-orange-400">
+            <li class="feature-item reveal border-t border-neutral-800 pt-6">
+              <span class="feature-icon mb-4 grid size-10 place-items-center rounded-lg border border-neutral-800 bg-neutral-900 text-orange-400">
                 <f.icon class="size-5" stroke-width={1.75} aria-hidden="true" />
               </span>
               <h3 class="font-medium text-neutral-50">{f.title}</h3>
@@ -217,7 +217,7 @@ const nav = [
           {shots.map((s) => (
             <li class="reveal">
               <figure>
-                <a href={s.src.src} class="block overflow-hidden rounded-xl border border-neutral-800 bg-neutral-900 transition-colors duration-150 hover:border-neutral-600">
+                <a href={s.src.src} class="screenshot-link block overflow-hidden rounded-xl border border-neutral-800 bg-neutral-900 transition-colors duration-150 hover:border-neutral-600">
                   <Image src={s.src} alt={s.alt} widths={[480, 960, 1464]} sizes="(min-width: 1024px) 480px, (min-width: 640px) 50vw, 100vw" loading="lazy" decoding="async" class="h-auto w-full" />
                   <span class="sr-only">(open full size)</span>
                 </a>
@@ -233,10 +233,10 @@ const nav = [
     <section id="faq" aria-labelledby="faq-title" class="border-t border-neutral-800/80">
       <div class="mx-auto max-w-3xl px-6 py-24">
         <h2 id="faq-title" class="reveal text-3xl font-semibold text-balance text-neutral-50">Questions</h2>
-        <div class="mt-10 divide-y divide-neutral-800 border-y border-neutral-800">
+        <div class="mt-12 divide-y divide-neutral-800 border-y border-neutral-800">
           {faqs.map((f) => (
-            <details class="group reveal">
-              <summary class="flex cursor-pointer list-none items-center justify-between gap-6 py-5 font-medium text-neutral-100 [&::-webkit-details-marker]:hidden">
+            <details class="faq-item group reveal">
+              <summary class="flex cursor-pointer list-none items-center justify-between gap-6 py-6 font-medium text-neutral-100 [&::-webkit-details-marker]:hidden">
                 {f.q}
                 <Plus class="size-4 shrink-0 text-neutral-500 transition-transform duration-150 group-open:rotate-45 motion-reduce:transition-none" aria-hidden="true" />
               </summary>
@@ -244,7 +244,7 @@ const nav = [
             </details>
           ))}
         </div>
-        <p class="mt-10 text-neutral-400">
+        <p class="mt-12 text-neutral-400">
           More detail, including the current free models and manual install, is in the{" "}
           <a href={readme} class="text-neutral-100 underline decoration-neutral-700 underline-offset-4 transition-colors duration-150 hover:decoration-neutral-400">README on GitHub</a>.
         </p>
@@ -253,7 +253,7 @@ const nav = [
   </main>
 
   <footer class="border-t border-neutral-800/80 pb-[env(safe-area-inset-bottom)]">
-    <div class="mx-auto flex max-w-5xl flex-col gap-4 px-6 py-10 text-sm text-neutral-400 sm:flex-row sm:items-center sm:justify-between">
+    <div class="mx-auto flex max-w-5xl flex-col gap-4 px-6 py-12 text-sm text-neutral-400 sm:flex-row sm:items-center sm:justify-between">
       <p>MIT License · © 2026 Yasir Khan · Not affiliated with Cline or OpenCode.</p>
       <ul class="flex gap-6">
         <li><a href={repo} class="transition-colors duration-150 hover:text-neutral-50">GitHub</a></li>
@@ -289,7 +289,6 @@ const nav = [
       }).format(stars)
       count.textContent = formatted
       const label = `${new Intl.NumberFormat("en").format(stars)} GitHub ${stars === 1 ? "star" : "stars"}`
-      link.setAttribute("aria-label", `View repository on GitHub — ${label}`)
       badge.title = label
       badge.hidden = false
       badge.classList.add("inline-flex")
