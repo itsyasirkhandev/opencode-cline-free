@@ -1,8 +1,26 @@
 @import "tailwindcss";
 
 @theme {
-  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  /* Fixed warm-neutral ramp; retain the existing dark/orange identity. */
+  --color-neutral-50: hsl(30, 20%, 98%);
+  --color-neutral-100: hsl(30, 12%, 94%);
+  --color-neutral-200: hsl(30, 8%, 86%);
+  --color-neutral-300: hsl(30, 6%, 76%);
+  --color-neutral-400: hsl(30, 5%, 65%);
+  --color-neutral-500: hsl(30, 4%, 55%);
+  --color-neutral-600: hsl(30, 4%, 42%);
+  --color-neutral-700: hsl(30, 5%, 28%);
+  --color-neutral-800: hsl(30, 6%, 20%);
+  --color-neutral-900: hsl(30, 7%, 11%);
+  --color-neutral-950: hsl(30, 8%, 6%);
+  --color-orange-300: hsl(28, 100%, 76%);
+  --color-orange-400: hsl(28, 96%, 66%);
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono",
+    monospace;
 }
 
 @layer base {
@@ -17,12 +35,138 @@
   }
   :focus-visible {
     outline: 2px solid var(--color-orange-400);
-    outline-offset: 3px;
+    outline-offset: 4px;
     border-radius: 4px;
   }
   ::selection {
     background: var(--color-orange-400);
     color: var(--color-neutral-950);
+  }
+}
+
+:root {
+  --surface: var(--color-neutral-950);
+  --surface-raised: var(--color-neutral-900);
+  --text-primary: var(--color-neutral-50);
+  --text-secondary: var(--color-neutral-300);
+  --text-tertiary: var(--color-neutral-400);
+  --action: var(--color-orange-400);
+  --action-hover: var(--color-orange-300);
+  --action-text: var(--color-neutral-950);
+  --divider: var(--color-neutral-800);
+  --radius-panel: 12px;
+  --shadow-panel: 0 10px 24px hsl(0, 0%, 0%, 0.2);
+}
+
+body {
+  background: var(--surface);
+  color: var(--text-secondary);
+}
+
+p {
+  line-height: 1.75;
+}
+
+.hero {
+  row-gap: 48px;
+  padding-block: 64px;
+}
+
+.hero h1 {
+  line-height: 1.1;
+  letter-spacing: -0.025em;
+}
+
+.primary-action {
+  min-height: 48px;
+  padding: 12px 24px;
+  background: var(--action);
+  color: var(--action-text);
+  font-weight: 600;
+}
+
+.primary-action:hover {
+  background: var(--action-hover);
+}
+
+.terminal {
+  border-radius: var(--radius-panel);
+  border-color: var(--divider);
+  box-shadow: var(--shadow-panel);
+}
+
+.terminal > div:first-child {
+  background: var(--surface);
+}
+.terminal > div:nth-child(2) {
+  padding: 24px;
+}
+.terminal .term-line {
+  line-height: 1.75;
+}
+
+.command-box {
+  padding: 8px 8px 8px 16px;
+  border-color: var(--divider);
+}
+
+.copy {
+  width: 48px;
+  height: 48px;
+  color: var(--text-tertiary);
+}
+
+.step-card {
+  background: var(--surface-raised);
+  border: 0;
+  border-radius: var(--radius-panel);
+}
+
+.step-number {
+  width: 32px;
+  height: 32px;
+  border: 0;
+  background: var(--surface);
+  color: var(--action);
+}
+
+.feature-item {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.feature-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius-panel);
+  color: var(--action);
+}
+
+.screenshot-link {
+  border-radius: var(--radius-panel);
+  box-shadow: var(--shadow-panel);
+}
+
+.faq-item[open] summary {
+  color: var(--action);
+}
+.faq-item p {
+  max-width: 65ch;
+  padding-bottom: 32px;
+}
+
+header a,
+footer a {
+  min-height: 48px;
+}
+footer a {
+  display: inline-flex;
+  align-items: center;
+}
+
+@media (min-width: 640px) {
+  .hero {
+    padding-block: 96px;
   }
 }
 
@@ -40,7 +184,7 @@
   }
   /* Cursor blink, paused while the terminal is off-screen */
   .cursor {
-    animation: blink 1s steps(1, end) infinite;
+    animation: blink 1s steps(1, end) 3;
     animation-play-state: paused;
   }
   [data-onscreen] .cursor {
@@ -67,4 +211,17 @@
   50% {
     opacity: 0;
   }
+}
+
+/* Preserve generous hit areas and allow footer links to reflow at text zoom. */
+header nav ul a {
+  display: inline-flex;
+  align-items: center;
+}
+footer > div,
+footer ul {
+  flex-wrap: wrap;
+}
+footer a {
+  min-width: 48px;
 }
