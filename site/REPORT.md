@@ -101,3 +101,14 @@ N/A — no formal EN 301 549 / VPAT declaration. Hearing access is blocked by ME
 - Static check commands: `pnpm run check`; `pnpm exec tsc --noEmit`; targeted Prettier; `python /data/a11y/verify-a11y.py site --src src` from repository root. Gate is fetched from the standard’s upstream `tools/verify-a11y.py`, not installed into this project.
 - Static gate does not establish conformance. Its 62 warnings comprise the known failed media checkpoint, self-reported verification and 60 expected hex-literal warnings: source tokens use HSL while both evidence tables record their computed hex equivalents. The baseline Terminal.astro is not part of this redesign and is not reformatted.
 - Before merge: independent fresh-context review, browser layout/state checks, image availability/rights review and all pending human scenarios. Before production AA claim: resolve MEDIA-001.
+
+## Build-failure follow-up (2026-10-17)
+
+This follow-up supersedes the earlier no-build limitation for build verification only. Browser, assistive-technology and MEDIA-001 findings above are unchanged; conformance remains conditional.
+
+- Reproduced the missing `@aliimam/logos/dist/index.cjs` failure using the previous main-branch configuration.
+- Root cause: the package declares a missing CJS entry. Astro 7 uses `vite.resolve.noExternal`; the earlier `vite.ssr.noExternal` setting did not bundle the dependency during prerendering.
+- Corrected only that configuration key; retained the package's valid ESM entry and existing dependencies.
+- Clean worktree at `4a22278`, patched configuration: `npm ci`, `npm run check` (zero errors, warnings or hints), and `npm run build` all passed using the committed npm lockfile (Astro 7.3.8).
+- Existing pnpm installation (Astro 7.4.0): build, Astro check, TypeScript and configuration formatting also passed.
+- Verification remains self-reported. No browser preview, keyboard interaction or screen-reader test was run. CI/deployment result must be checked after push.

@@ -13,6 +13,6 @@ export default defineConfig({
   vite: {
     plugins: [tailwindcss()],
     // Bundle the valid ESM entry; the package's declared CJS entry is missing.
-    ssr: { noExternal: ["@aliimam/logos"] },
+    resolve: { noExternal: ["@aliimam/logos"] },
   },
 });
