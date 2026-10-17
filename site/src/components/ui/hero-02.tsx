@@ -2,141 +2,148 @@
 
 import { GradientWave } from "@/components/ui/hero-02-utils/gradient-wave";
 import { Button } from "@/components/ui/button";
-import {
-  ClaudeAI,
-  Cursor,
-  Github,
-  GoogleWordmark as Google,
-  Grok,
-  OpenAI,
-} from "@aliimam/logos";
+import { Github } from "@aliimam/logos";
 import { Marquee } from "@/components/ui/hero-02-utils/marquee";
+import { PluginIcon } from "@/components/ui/hero-02-utils/plugin-icon";
+import type { ComponentProps } from "react";
 
-const technologies = [
+const capabilities = [
   {
-    name: "Figma",
-    designation: "UI/UX Design Tool",
-    description: "Collaborative interface design.",
-    logo: "https://cdn.21st.dev/assets/localized/74e550b9690bacf66ebd69b3516ef9c8734a44a247d4b6b6de2b86919aa367b3.jpg",
-    icon: Github,
+    name: "Live model discovery",
+    designation: "FOLLOWS CLINE’S FREE ROTATION",
+    description:
+      "The plugin fetches Cline’s free-model list at startup. New rotations don’t need a plugin update.",
+    command: "/models",
+    icon: "models",
   },
   {
-    name: "Adobe XD",
-    designation: "Design & Prototyping",
-    description: "Create wireframes, prototypes.",
-    logo: "https://cdn.21st.dev/assets/localized/a68df68cdc74de1ab5e0155a13782cc0683df39a1cce61ac43bf202523a9246c.jpg",
-    icon: OpenAI,
+    name: "Your Cline account",
+    designation: "THREE WAYS TO CONNECT",
+    description:
+      "Sign in through your browser, reuse your Cline CLI login, or connect with a token.",
+    command: "/connect",
+    icon: "accounts",
   },
   {
-    name: "Sketch",
-    designation: "Vector Design Tool",
-    description: "Professional digital design for macOS.",
-    logo: "https://cdn.21st.dev/assets/localized/87f7bec26ed746a2e43b7a6ca4d1ca5dc388d5b0e27fabb9662632b0bd8a7e02.jpg",
-    icon: Cursor,
+    name: "Automatic failover",
+    designation: "PER-ACCOUNT, PER-MODEL LIMITS",
+    description:
+      "When an account hits a model’s limit, retry the request on the next healthy connected account.",
+    command: "cline_free_status",
+    icon: "retry",
   },
   {
-    name: "Canva",
-    designation: "Graphic Design Platform",
-    description: "Easily create social media posts.",
-    logo: "https://cdn.21st.dev/assets/localized/5d2ed8a1814e41e2abad2a07aecc1853d1321ac6008170eb8c34bb0375deca51.jpg",
-    icon: Google,
+    name: "Sessions that stick",
+    designation: "KEEP YOUR PROMPT CACHE WARM",
+    description:
+      "Each session stays on one account per model. It moves when that account is limited or needs attention.",
+    command: "Session → account → model",
+    icon: "session",
   },
-];
+] satisfies Array<{
+  name: string;
+  designation: string;
+  description: string;
+  command: string;
+  icon: ComponentProps<typeof PluginIcon>["name"];
+}>;
 
-const logos = [
-  { name: "OpenAI", Icon: OpenAI },
-  { name: "Claude", Icon: ClaudeAI },
-  { name: "Cursor", Icon: Cursor },
-  { name: "GitHub", Icon: Github },
-  { name: "Grok", Icon: Grok },
-  { name: "Google", Icon: Google },
-];
+const workflowIcons = [
+  { name: "OpenCode workflow", icon: "terminal" },
+  { name: "Free-model discovery", icon: "models" },
+  { name: "Connected Cline accounts", icon: "accounts" },
+  { name: "Automatic failover", icon: "retry" },
+] satisfies Array<{
+  name: string;
+  icon: ComponentProps<typeof PluginIcon>["name"];
+}>;
 
 export function HeroSection02() {
+  const base = import.meta.env.BASE_URL.replace(/\/?$/, "/");
   return (
     <div className="design-hero relative isolate">
       <GradientWave className="absolute inset-0 -z-10" />
       <header className="design-nav page-width">
-        <a href="#main" className="design-brand" aria-label="Design Code">
-          <img
-            src="https://cdn.21st.dev/assets/localized/2dc06bac80a527ef88f3ddd18d95f369f883692901dcc7d90bf3b45e07f7c3b7.png"
-            alt=""
-            width={50}
-            height={50}
-          />
+        <a href="#hero-title" className="design-brand">
+          <img src={`${base}logo.svg`} alt="" width={48} height={48} />
           <span>
-            Design Code<span className="brand-period">.</span>
+            cline-free<span className="brand-period">.</span>
           </span>
         </a>
         <nav aria-label="Primary">
-          <Button asChild>
-            <a href="#design-tools">
-              Explore Designs <span aria-hidden="true">↗</span>
+          <Button asChild variant="outline">
+            <a href="https://github.com/itsyasirkhandev/opencode-cline-free">
+              <Github className="h-6 w-6" aria-hidden="true" />
+              GitHub <span aria-hidden="true">↗</span>
             </a>
           </Button>
         </nav>
       </header>
       <section className="hero-panel page-width" aria-labelledby="hero-title">
-        <p className="hero-kicker">A space for your next great idea</p>
+        <p className="hero-kicker">OPENCODE V2 · COMMUNITY PLUGIN</p>
         <div className="hero-line">
           <h1 id="hero-title" tabIndex={-1}>
-            Design Code
+            Cline models.
           </h1>
           <p className="hero-description">
-            Discover top-notch design tools and resources that help you craft
-            stunning interfaces and graphics. Learn and create with the best in
-            the design industry.
+            Use Cline’s rotating free models inside OpenCode. Connect your
+            account, choose a model, and keep working in the terminal you
+            already use.
           </p>
         </div>
         <div className="hero-line hero-line-tools">
-          <ul className="logo-stack" aria-label="Creative technology brands">
-            {logos.map(({ name, Icon }) => (
-              <li key={name} aria-label={name}>
-                <Icon className="brand-icon" aria-hidden="true" />
+          <ul className="logo-stack" aria-label="Plugin capabilities">
+            {workflowIcons.map(({ name, icon }) => (
+              <li key={name}>
+                <PluginIcon name={icon} className="brand-icon" />
+                <span className="sr-only">{name}</span>
               </li>
             ))}
           </ul>
-          <p className="hero-display">Creative Tools</p>
+          <p className="hero-display">Your workflow.</p>
         </div>
         <div className="hero-line hero-line-action">
-          <p className="hero-display hero-underlined">Learn &amp; Create</p>
+          <p className="hero-display hero-underlined">Keep coding.</p>
           <Button asChild className="hero-cta">
-            <a href="#design-tools">
-              Explore Designs <span aria-hidden="true">↗</span>
+            <a href="#setup">
+              Install plugin <span aria-hidden="true">↓</span>
             </a>
           </Button>
         </div>
+        <p className="hero-note">
+          OpenCode 2.x required. Cline’s daily free quota applies. Paid models
+          use Cline credits.
+        </p>
       </section>
       <section
         className="tools-section page-width"
-        id="design-tools"
-        aria-labelledby="tools-title"
+        id="features"
+        aria-labelledby="features-title"
       >
         <div className="section-intro">
           <div>
-            <p className="eyebrow">THE CREATIVE TOOLKIT</p>
-            <h2 id="tools-title">Good ideas deserve great tools.</h2>
+            <p className="eyebrow">BUILT FOR YOUR OPENCODE WORKFLOW</p>
+            <h2 id="features-title">One plugin. Less setup.</h2>
           </div>
-          <p>Some of the top design tools used by professionals</p>
+          <p>
+            Live discovery, flexible sign-in, and account failover—without
+            leaving OpenCode.
+          </p>
         </div>
         <Marquee>
-          {technologies.map((tech) => (
-            <article key={tech.name} className="tool-card">
-              <img
-                src={tech.logo}
-                alt=""
-                width={480}
-                height={320}
-                loading="lazy"
-                className="tool-image"
-              />
+          {capabilities.map((capability) => (
+            <article key={capability.name} className="tool-card">
+              <div className="tool-visual">
+                <PluginIcon
+                  name={capability.icon}
+                  className="capability-icon"
+                />
+                <code>{capability.command}</code>
+              </div>
               <div className="tool-copy">
-                <span className="tool-icon" aria-hidden="true">
-                  <tech.icon className="h-6 w-6" />
-                </span>
-                <h3>{tech.name}</h3>
-                <p className="tool-designation">{tech.designation}</p>
-                <p>{tech.description}</p>
+                <h3>{capability.name}</h3>
+                <p className="tool-designation">{capability.designation}</p>
+                <p>{capability.description}</p>
               </div>
             </article>
           ))}

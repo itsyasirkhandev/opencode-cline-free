@@ -62,3 +62,9 @@ These supersede the Launchpad palette and motion choices above; setup interactio
 | control / bg     | #717a84    | #fcfaf8    |  4.19:1 |   3:1 | ✅     |
 | control / panel  | #717a84    | #ffffff    |  4.36:1 |   3:1 | ✅     |
 | control / raised | #717a84    | #f3f1ed    |  3.86:1 |   3:1 | ✅     |
+
+## Plugin-specific content follow-up (2026-10-17)
+
+- **Brand and content** → owner requested plugin-relevant copy and icons, superseding the supplied Design Code/tool-brand content while retaining the approved layout.
+- **Capability illustrations** → local line icons accompany equivalent headings/command text; existing local plugin logo accompanies the cline-free wordmark. No remote thumbnails or unrelated vendor endorsements.
+- **Calls to action** → Install plugin navigates to the written setup instructions; GitHub links to the source repository. Quota and paid-credit caveats remain visible.

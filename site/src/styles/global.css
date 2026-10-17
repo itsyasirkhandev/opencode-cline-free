@@ -248,28 +248,33 @@ code {
   border-radius: 24px;
   background: var(--panel);
 }
-.tool-image {
-  display: block;
-  width: 100%;
-  height: auto;
-  aspect-ratio: 3 / 2;
-  object-fit: cover;
+.tool-visual {
+  min-height: 192px;
+  padding: 32px 24px;
+  background: var(--raised);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 32px;
+}
+.capability-icon {
+  width: 48px;
+  height: 48px;
+}
+.tool-visual code {
+  font-size: 12px;
+  color: var(--muted);
+}
+.hero-note {
+  margin: 32px 0 0;
+  max-width: 80ch;
+  font-size: 12px;
+  color: var(--muted);
 }
 .tool-copy {
   position: relative;
   padding: 32px 24px 24px;
-}
-.tool-icon {
-  display: grid;
-  place-items: center;
-  width: 48px;
-  height: 48px;
-  position: absolute;
-  right: 24px;
-  top: -24px;
-  border-radius: 50%;
-  background: var(--panel);
-  border: 1px solid var(--line);
 }
 .tool-copy p {
   font-size: 14px;

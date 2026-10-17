@@ -34,12 +34,16 @@ The previously missing utilities are local implementations:
 - `Marquee`: static wrapping tool collection, not an automatically scrolling carousel.
 - `Button`: shadcn-style CVA/Radix Slot primitive; CTAs render as real links via `asChild`.
 
-The supplied design-tool copy and image URLs are retained (angle-bracket URL wrappers removed). Both Explore Designs links lead to `#design-tools`. The remote images are decorative beside the text labels, as confirmed by the owner; the header link is named Design Code. External asset availability, content and usage rights should be checked before release. Existing plugin setup, tutorial and capability content remain below the hero.
+The hero now uses plugin-specific copy grounded in the repository README. The header uses the existing local plugin logo and a GitHub link; Install plugin leads to `#setup`. Generic design-tool thumbnails and unrelated vendor logos are removed. Local line icons illustrate discovery, sign-in, failover and session pinning beside equivalent text. No static model names or unlimited/free-quota promises are presented. Existing setup instructions, tutorial and capability content remain below the hero.
 
 ## Responsive strategy and verification
 
-Primary packet: **page-layout**, medium confidence until browser review. Mobile defaults stack hero rows and controls; intrinsic auto-fit grids wrap cards; viewport rules at 640px and 1024px relax spacing and arrange the desktop hero. No container queries are needed for this page-owned layout. Images reserve a 3:2 crop and the existing video retains 16:9 sizing.
+Primary packet: **page-layout**, medium confidence until browser review. Mobile defaults stack hero rows and controls; intrinsic auto-fit grids wrap cards; viewport rules at 640px and 1024px relax spacing and arrange the desktop hero. No container queries are needed for this page-owned layout. Capability illustrations use flexible-height icon/command panels; the existing video retains 16:9 sizing.
 
-Before merging, check 320px, 375px, 768px, 1024px and 1440px, 200% text resize, 400% equivalent reflow, long-copy wrapping, keyboard focus, clipboard success/failure, the tutorial player and remote images. Check the headline underline, logo overlap and gradient panel contrast visually. Accessibility owns screen-reader/voice-control and media checks; see `REPORT.md` and the existing MEDIA-001 blocker in `EXCEPTIONS.md`.
+Before merging, check 320px, 375px, 768px, 1024px and 1440px, 200% text resize, 400% equivalent reflow, long-copy wrapping, keyboard focus, clipboard success/failure, the tutorial player and the local logo. Check the headline underline, logo overlap and gradient panel contrast visually. Accessibility owns screen-reader/voice-control and media checks; see `REPORT.md` and the existing MEDIA-001 blocker in `EXCEPTIONS.md`.
 
 Build and browser preview were explicitly declined for this change. Only static verification was performed. The full format check also includes pre-existing files; do not reformat unrelated components just to silence baseline findings.
+
+### Plugin-content follow-up
+
+The generic design-tool content has been replaced with plugin messaging and local feature icons. Clean npm install, type checks and a production build were run successfully for this revision after builds were authorized during the build-failure investigation. Built-HTML assertions cover branding, internal anchors, logo base path and template removal. Browser and assistive-technology checks remain pending.
