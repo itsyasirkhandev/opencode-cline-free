@@ -21,9 +21,11 @@ const { command, label = "Copy command" } = Astro.props;
       try {
         await navigator.clipboard.writeText(text);
         button.textContent = "Copied";
+        button.setAttribute("aria-label", `Copied command: ${text}`);
         if (status) status.textContent = `Copied command: ${text}`;
       } catch {
         button.textContent = "Select & copy";
+        button.setAttribute("aria-label", "Select & copy command manually");
         if (status)
           status.textContent =
             "Copy unavailable. Select the command and copy it manually.";
