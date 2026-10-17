@@ -10,5 +10,9 @@ export default defineConfig({
   base: "/opencode-cline-free",
   trailingSlash: "ignore",
   integrations: [sitemap(), react()],
-  vite: { plugins: [tailwindcss()] },
+  vite: {
+    plugins: [tailwindcss()],
+    // Bundle the valid ESM entry; the package's declared CJS entry is missing.
+    ssr: { noExternal: ["@aliimam/logos"] },
+  },
 });
