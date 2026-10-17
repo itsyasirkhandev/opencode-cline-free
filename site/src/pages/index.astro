@@ -1,8 +1,8 @@
 ---
 import Layout from "../layouts/Layout.astro";
 import CopyCommand from "../components/CopyCommand.astro";
+import { HeroSection02 } from "@/components/ui/hero-02";
 
-const logo = `${import.meta.env.BASE_URL.replace(/\/?$/, "/")}logo.svg?v=free-flight`;
 const title = "opencode-cline-free: Cline's free models in OpenCode";
 const description =
   "Use Cline’s rotating free models inside OpenCode V2, with automatic discovery and failover across your connected accounts.";
@@ -29,47 +29,23 @@ const steps = [
 ---
 
 <Layout title={title} description={description}>
-  <div class="wrap launch">
-    <header class="masthead">
-      <a
-        class="brand"
-        href="https://github.com/itsyasirkhandev/opencode-cline-free"
-      >
-        <img src={logo} width="32" height="32" alt="" aria-hidden="true" />
-        opencode-cline-free
-      </a>
-      <nav aria-label="Primary">
-        <ul class="navlinks">
-          <li class="nav-doc">
-            <a href="https://github.com/itsyasirkhandev/opencode-cline-free#readme">
-              Docs
-            </a>
-          </li>
-          <li>
-            <a href="https://github.com/itsyasirkhandev/opencode-cline-free">
-              GitHub ↗
-            </a>
-          </li>
-        </ul>
-      </nav>
-    </header>
-    <main id="main" tabindex="-1">
+  <main id="main" tabindex="-1">
+    <HeroSection02 />
+    <div class="wrap launch">
       <section class="launch-hero">
         <div class="launch-heading">
-          <p class="eyebrow motion-entry entry-1">
-            Your Cline account. Your OpenCode workflow.
-          </p>
-          <h1 class="motion-entry entry-2">
+          <p class="eyebrow">FROM INSPIRATION TO IMPLEMENTATION</p>
+          <h2>
             Free models.
             <br />
             Three steps away.
-          </h1>
-          <p class="intro motion-entry entry-3">
+          </h2>
+          <p class="intro">
             Use Cline’s rotating free models inside OpenCode V2, with automatic
             discovery and failover across your connected accounts.
           </p>
         </div>
-        <div class="launch-console motion-entry entry-4">
+        <div class="launch-console">
           <ol class="step-menu">
             <li>
               <button
@@ -108,15 +84,15 @@ const steps = [
             aria-label="Setup instructions"
           >
             {steps.map((step, index) => (
-              <div data-step-panel={index} hidden={index !== 0}>
-                <h2>{step.title}</h2>
+              <div data-step-panel={index}>
+                <h3>{step.title}</h3>
                 <p>{step.body}</p>
                 <CopyCommand command={step.command} label={step.label} />
               </div>
             ))}
           </section>
         </div>
-        <p class="fine motion-entry entry-5">
+        <p class="fine">
           Setup guide — run these commands in OpenCode, not on this page.
           Requires OpenCode 2.x.
           <br />
@@ -186,14 +162,22 @@ const steps = [
           </p>
         </div>
       </section>
-    </main>
-    <footer class="footer">
-      <p>MIT licensed · Yasir Khan</p>
-      <p>
-        Independent community plugin. Not affiliated with Cline or OpenCode.
-      </p>
-    </footer>
-  </div>
+      <footer class="footer">
+        <p>MIT licensed · Yasir Khan</p>
+        <nav aria-label="Project resources" class="footer-links">
+          <a href="https://github.com/itsyasirkhandev/opencode-cline-free#readme">
+            Docs
+          </a>
+          <a href="https://github.com/itsyasirkhandev/opencode-cline-free">
+            GitHub ↗
+          </a>
+        </nav>
+        <p>
+          Independent community plugin. Not affiliated with Cline or OpenCode.
+        </p>
+      </footer>
+    </div>
+  </main>
   <p id="status" class="sr-only" role="status"></p>
 </Layout>
 
@@ -203,6 +187,11 @@ const steps = [
     document.querySelectorAll<HTMLButtonElement>("button[data-step]");
   const panels = document.querySelectorAll<HTMLElement>("[data-step-panel]");
 
+  // All instructions stay readable if JavaScript is unavailable.
+  for (const panel of panels) {
+    panel.hidden = panel.dataset.stepPanel !== "0";
+  }
+
   for (const button of stepButtons) {
     button.addEventListener("click", () => {
       for (const candidate of stepButtons) {
@@ -211,7 +200,7 @@ const steps = [
       for (const panel of panels) {
         panel.hidden = panel.dataset.stepPanel !== button.dataset.step;
         if (!panel.hidden && status) {
-          status.textContent = `Step ${Number(button.dataset.step) + 1}: ${panel.querySelector("h2")?.textContent ?? ""}`;
+          status.textContent = `Step ${Number(button.dataset.step) + 1}: ${panel.querySelector("h3")?.textContent ?? ""}`;
         }
       }
     });
