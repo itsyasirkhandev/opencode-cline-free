@@ -5,7 +5,13 @@ const { command, label = "Copy command" } = Astro.props;
 
 <div class="command">
   <code>{command}</code>
-  <button type="button" class="copy" data-copy={command} aria-label={label}>
+  <button
+    type="button"
+    class="copy"
+    data-copy={command}
+    aria-label={label}
+    hidden
+  >
     Copy
   </button>
 </div>
@@ -31,5 +37,6 @@ const { command, label = "Copy command" } = Astro.props;
             "Copy unavailable. Select the command and copy it manually.";
       }
     });
+    button.hidden = false;
   }
 </script>

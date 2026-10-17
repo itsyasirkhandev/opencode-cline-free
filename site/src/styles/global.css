@@ -24,6 +24,8 @@
   --line: hsl(40, 12%, 82%);
   --control: hsl(210, 8%, 48%);
   --shadow: 0 15px 35px hsla(210, 20%, 15%, 0.1);
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
   font-family: "Helvetica Neue", Arial, sans-serif;
 }
 * {
@@ -159,11 +161,8 @@ code {
 }
 .hero-kicker,
 .eyebrow {
-  font:
-    12px/1.5 ui-monospace,
-    Menlo,
-    monospace;
-  letter-spacing: 0.05em;
+  font-size: 14px;
+  line-height: 1.5;
   color: var(--muted);
   margin-bottom: 24px;
 }
@@ -187,31 +186,38 @@ code {
 .hero-description {
   max-width: 42ch;
   color: var(--muted);
-  font-size: 14px;
+  font-size: 16px;
   margin: 0;
 }
-.logo-stack {
+.integration-pair {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0;
-  padding: 0 0 0 8px;
+  align-items: center;
+  gap: 12px;
   margin: 0;
-  list-style: none;
 }
-.logo-stack li {
-  width: 48px;
-  height: 48px;
-  margin-left: -8px;
+.integration-product {
   display: grid;
   place-items: center;
-  border: 2px solid var(--panel);
-  border-radius: 50%;
-  background: var(--panel);
-  box-shadow: 0 4px 6px hsla(210, 20%, 15%, 0.1);
+  gap: 8px;
+  min-width: 64px;
+  color: var(--muted);
+  font-size: 14px;
 }
-.brand-icon {
-  width: 24px;
-  height: 24px;
+.integration-product img {
+  object-fit: contain;
+  height: 48px;
+}
+.integration-link {
+  display: flex;
+  gap: 4px;
+  align-self: flex-start;
+  margin-top: 24px;
+}
+.integration-link span {
+  width: 8px;
+  height: 4px;
+  background: var(--accent);
+  border-radius: 4px;
 }
 .hero-underlined {
   text-decoration: underline;
@@ -232,7 +238,7 @@ code {
 .section-intro p {
   margin-bottom: 0;
   color: var(--muted);
-  font-size: 14px;
+  font-size: 16px;
   max-width: 36ch;
 }
 .section-intro .eyebrow {
@@ -251,32 +257,34 @@ code {
   background: var(--panel);
 }
 .tool-visual {
-  min-height: 192px;
-  padding: 32px 24px;
-  background: var(--raised);
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 32px;
+  background: var(--bg);
+  overflow: hidden;
 }
-.capability-icon {
-  width: 48px;
-  height: 48px;
+.tool-visual img {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 500 / 376;
+  display: block;
+  object-fit: contain;
 }
-.tool-visual code {
-  font-size: 12px;
+.tool-command {
+  display: inline-block;
+  font-size: 14px;
   color: var(--muted);
+  margin-top: 24px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--raised);
 }
 .hero-note {
   margin: 32px 0 0;
   max-width: 80ch;
-  font-size: 12px;
+  font-size: 14px;
   color: var(--muted);
 }
 .tool-copy {
   position: relative;
-  padding: 32px 24px 24px;
+  padding: 24px;
 }
 .tool-copy p {
   font-size: 14px;
@@ -284,8 +292,9 @@ code {
   margin: 12px 0 0;
 }
 .tool-copy .tool-designation {
-  font-size: 12px;
-  margin-top: 8px;
+  font-size: 14px;
+  margin: 0 0 16px;
+  color: var(--accent);
 }
 .launch {
   max-width: 1120px;
@@ -328,6 +337,10 @@ code {
   flex: 1;
   min-width: 96px;
 }
+.step-menu[hidden],
+.copy[hidden] {
+  display: none;
+}
 .step-menu button {
   border: 1px solid transparent;
   display: flex;
@@ -356,6 +369,12 @@ code {
 .step-content {
   padding: 24px;
   min-width: 0;
+  grid-column: 1 / -1;
+}
+.step-content
+  > [data-step-panel]:not([hidden])
+  ~ [data-step-panel]:not([hidden]) {
+  margin-top: 48px;
 }
 .step-content h3 {
   margin-bottom: 16px;
@@ -448,10 +467,7 @@ code {
   border-radius: 24px;
 }
 .support .number {
-  font:
-    12px/1.5 ui-monospace,
-    Menlo,
-    monospace;
+  font-size: 14px;
   color: var(--muted);
   display: block;
   margin-bottom: 24px;
@@ -489,24 +505,33 @@ code {
   .hero-display {
     font-size: 60px;
   }
-  .logo-stack li {
-    width: 64px;
-    height: 64px;
-    margin-left: -12px;
-  }
-  .logo-stack {
-    padding-left: 12px;
-  }
-  .brand-icon {
-    width: 32px;
-    height: 32px;
-  }
   .hero-cta {
     width: auto;
     padding-inline: 48px;
   }
   .step-content {
     padding: 32px;
+  }
+}
+@media (min-width: 768px) {
+  .tool-collection {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .tool-card-featured {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: center;
+  }
+  .tool-card-featured .tool-visual {
+    order: 2;
+  }
+  .tool-card-featured .tool-copy {
+    padding: 48px;
+  }
+  .tool-card-featured h3 {
+    font-size: 30px;
+    line-height: 1.2;
   }
 }
 @media (min-width: 1024px) {
@@ -555,6 +580,9 @@ code {
   .step-menu button {
     justify-content: flex-start;
   }
+  .step-menu:not([hidden]) + .step-content {
+    grid-column: 2;
+  }
 }
 
 .footer-links {
@@ -566,4 +594,36 @@ code {
   display: inline-flex;
   align-items: center;
   text-decoration: underline;
+}
+
+/* Motion is optional, pointer-only on controls, and never hides default content. */
+@media (prefers-reduced-motion: no-preference) {
+  .copy[data-pointer-press],
+  .step-menu button[data-pointer-press] {
+    transform: scale(0.97);
+    transition: transform 160ms var(--ease-out);
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .hero-cta:hover {
+      transform: translateY(-2px);
+    }
+    .hero-cta {
+      transition: transform 160ms ease;
+    }
+    .tool-card:hover .tool-visual img {
+      transform: scale(1.02);
+    }
+    .tool-visual img {
+      transition: transform 200ms ease;
+    }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-cta,
+  .tool-visual img,
+  .copy,
+  .step-menu button {
+    transform: none;
+  }
 }

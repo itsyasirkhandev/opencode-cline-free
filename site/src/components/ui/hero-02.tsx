@@ -1,69 +1,49 @@
-"use client";
-
 import { GradientWave } from "@/components/ui/hero-02-utils/gradient-wave";
 import { Button } from "@/components/ui/button";
 import { Github } from "@aliimam/logos";
 import { Marquee } from "@/components/ui/hero-02-utils/marquee";
-import { PluginIcon } from "@/components/ui/hero-02-utils/plugin-icon";
-import type { ComponentProps } from "react";
 
 const capabilities = [
   {
-    name: "Live model discovery",
-    designation: "FOLLOWS CLINE’S FREE ROTATION",
+    name: "Free models, refreshed at startup",
+    designation: "Model discovery",
     description:
-      "The plugin fetches Cline’s free-model list at startup. New rotations don’t need a plugin update.",
+      "The plugin checks Cline's free-model list when OpenCode starts. New rotations don't need a plugin update. A saved copy keeps the list available offline.",
     command: "/models",
-    icon: "models",
+    image: "discovery",
   },
   {
-    name: "Your Cline account",
-    designation: "THREE WAYS TO CONNECT",
+    name: "Connect your Cline account",
+    designation: "Account sign-in",
     description:
-      "Sign in through your browser, reuse your Cline CLI login, or connect with a token.",
+      "Approve sign-in in your browser, reuse a Cline CLI login on this machine, or provide a Cline token.",
     command: "/connect",
-    icon: "accounts",
+    image: "connect",
   },
   {
-    name: "Automatic failover",
-    designation: "PER-ACCOUNT, PER-MODEL LIMITS",
+    name: "Retry on a healthy account",
+    designation: "Request failover",
     description:
-      "When an account hits a model’s limit, retry the request on the next healthy connected account.",
+      "When an account hits a rate limit, the plugin retries the request on the next healthy connected account. Limits stay separate for each model.",
     command: "cline_free_status",
-    icon: "retry",
+    image: "failover",
   },
   {
-    name: "Sessions that stick",
-    designation: "KEEP YOUR PROMPT CACHE WARM",
+    name: "Keep one account per session",
+    designation: "Session pinning",
     description:
-      "Each session stays on one account per model. It moves when that account is limited or needs attention.",
-    command: "Session → account → model",
-    icon: "session",
+      "Each session keeps the same account for each model until that account is limited, out of credits or needs a new login.",
+    command: "Per session, per model",
+    image: "session",
   },
-] satisfies Array<{
-  name: string;
-  designation: string;
-  description: string;
-  command: string;
-  icon: ComponentProps<typeof PluginIcon>["name"];
-}>;
-
-const workflowIcons = [
-  { name: "OpenCode workflow", icon: "terminal" },
-  { name: "Free-model discovery", icon: "models" },
-  { name: "Connected Cline accounts", icon: "accounts" },
-  { name: "Automatic failover", icon: "retry" },
-] satisfies Array<{
-  name: string;
-  icon: ComponentProps<typeof PluginIcon>["name"];
-}>;
+];
 
 export function HeroSection02() {
   const base = import.meta.env.BASE_URL.replace(/\/?$/, "/");
   return (
     <div className="design-hero relative isolate">
       <GradientWave className="absolute inset-0 -z-10" />
-      <header className="design-nav page-width">
+      <header className="design-nav page-width" data-reveal="fade">
         <a href="#hero-title" className="design-brand">
           <img src={`${base}logo.svg`} alt="" width={48} height={48} />
           <span>
@@ -80,30 +60,51 @@ export function HeroSection02() {
         </nav>
       </header>
       <section className="hero-panel page-width" aria-labelledby="hero-title">
-        <p className="hero-kicker">OPENCODE V2 · COMMUNITY PLUGIN</p>
-        <div className="hero-line">
+        <p className="hero-kicker" data-reveal="rise">
+          OpenCode V2 · Community plugin
+        </p>
+        <div className="hero-line" data-reveal="rise">
           <h1 id="hero-title" tabIndex={-1}>
             Cline models.
           </h1>
           <p className="hero-description">
-            Use Cline’s rotating free models inside OpenCode. Connect your
-            account, choose a model, and keep working in the terminal you
-            already use.
+            Use Cline's rotating free models in OpenCode with your Cline
+            account. The plugin loads the model list and routes requests across
+            the accounts you connect.
           </p>
         </div>
         <div className="hero-line hero-line-tools">
-          <ul className="logo-stack" aria-label="Plugin capabilities">
-            {workflowIcons.map(({ name, icon }) => (
-              <li key={name}>
-                <PluginIcon name={icon} className="brand-icon" />
-                <span className="sr-only">{name}</span>
-              </li>
-            ))}
-          </ul>
-          <p className="hero-display">Your workflow.</p>
+          <div className="integration-pair" data-reveal="connection">
+            <div className="integration-product">
+              <img
+                src={`${base}brands/opencode.svg`}
+                alt=""
+                width={32}
+                height={40}
+              />
+              <span>OpenCode</span>
+            </div>
+            <span className="integration-link" aria-hidden="true">
+              <span />
+              <span />
+              <span />
+            </span>
+            <div className="integration-product">
+              <img
+                src={`${base}brands/cline.svg`}
+                alt=""
+                width={48}
+                height={48}
+              />
+              <span>Cline</span>
+            </div>
+          </div>
+          <p className="hero-display" data-reveal="rise">
+            Inside OpenCode.
+          </p>
         </div>
-        <div className="hero-line hero-line-action">
-          <p className="hero-display hero-underlined">Keep coding.</p>
+        <div className="hero-line hero-line-action" data-reveal="rise">
+          <p className="hero-display hero-underlined">In your terminal.</p>
           <Button asChild className="hero-cta">
             <a href="#setup">
               Install plugin <span aria-hidden="true">↓</span>
@@ -111,7 +112,7 @@ export function HeroSection02() {
           </Button>
         </div>
         <p className="hero-note">
-          OpenCode 2.x required. Cline’s daily free quota applies. Paid models
+          OpenCode 2.x required. Cline's daily free quota applies. Paid models
           use Cline credits.
         </p>
       </section>
@@ -120,30 +121,37 @@ export function HeroSection02() {
         id="features"
         aria-labelledby="features-title"
       >
-        <div className="section-intro">
+        <div className="section-intro" data-reveal="fade">
           <div>
-            <p className="eyebrow">BUILT FOR YOUR OPENCODE WORKFLOW</p>
-            <h2 id="features-title">One plugin. Less setup.</h2>
+            <p className="eyebrow">Model discovery and account routing</p>
+            <h2 id="features-title">What the plugin handles.</h2>
           </div>
           <p>
-            Live discovery, flexible sign-in, and account failover—without
-            leaving OpenCode.
+            Cline sets the free rotation and account limits. The plugin makes
+            them available in OpenCode.
           </p>
         </div>
         <Marquee>
-          {capabilities.map((capability) => (
-            <article key={capability.name} className="tool-card">
-              <div className="tool-visual">
-                <PluginIcon
-                  name={capability.icon}
-                  className="capability-icon"
+          {capabilities.map((capability, index) => (
+            <article
+              key={capability.name}
+              className={`tool-card${index === 0 ? " tool-card-featured" : ""}`}
+            >
+              <div className="tool-visual" data-reveal="illustration">
+                <img
+                  src={`${base}illustrations/${capability.image}.svg`}
+                  alt=""
+                  width={500}
+                  height={376}
+                  loading="lazy"
+                  decoding="async"
                 />
-                <code>{capability.command}</code>
               </div>
               <div className="tool-copy">
-                <h3>{capability.name}</h3>
                 <p className="tool-designation">{capability.designation}</p>
+                <h3>{capability.name}</h3>
                 <p>{capability.description}</p>
+                <code className="tool-command">{capability.command}</code>
               </div>
             </article>
           ))}

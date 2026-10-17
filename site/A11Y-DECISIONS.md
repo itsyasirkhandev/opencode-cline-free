@@ -68,3 +68,16 @@ These supersede the Launchpad palette and motion choices above; setup interactio
 - **Brand and content** → owner requested plugin-relevant copy and icons, superseding the supplied Design Code/tool-brand content while retaining the approved layout.
 - **Capability illustrations** → local line icons accompany equivalent headings/command text; existing local plugin logo accompanies the cline-free wordmark. No remote thumbnails or unrelated vendor endorsements.
 - **Calls to action** → Install plugin navigates to the written setup instructions; GitHub links to the source repository. Quota and paid-credit caveats remain visible.
+
+## Artwork, copy and motion revision (2026-10-17)
+
+These supersede the static-only motion choice. Standard AA, the native setup
+selector, independent-plugin notice and unresolved MEDIA-001 remain unchanged.
+
+- **Brand identification** → unchanged official OpenCode and Cline marks beside visible names, using the owner's approved decorative-beside-equivalent-text pattern; removing a mark loses no information or function. Sources and license notices live in ASSETS.md.
+- **Capability artwork** → four actually generated, visually inspected illustrations beside complete equivalent copy; reuse the approved decorative pattern with empty alternatives, not new informative or functional image roles.
+- **Marketing motion** → one-time WAAPI entrances on already readable content, with a 50ms stagger and an 800ms maximum sequence; the illustration-only clip reveal never hides instructions.
+- **Conflicting needs, continuity versus vestibular comfort** → respect the system reduced-motion channel with 150ms opacity-only cues; cancel active entrances on a preference change, and never animate keyboard-driven navigation or setup changes.
+- **Text during entrances** → start text-bearing opacity at 0.9 rather than fading from invisible; the weakest soft-text pair at this opacity measures 4.82:1 on the page background.
+- **No-JavaScript instructions** → all panels and command text remain visible; setup selector and Copy buttons appear only after their handlers attach, avoiding inactive controls in the static fallback.
+- **Verification scope** → owner authorized the production build and local browser checks; generating agent remains the only verifier, so overall evidence is self-reported and CONDITIONAL. No further agents were used.

@@ -5,7 +5,7 @@ import { HeroSection02 } from "@/components/ui/hero-02";
 
 const title = "opencode-cline-free: Cline's free models in OpenCode";
 const description =
-  "Use Cline’s rotating free models inside OpenCode V2, with automatic discovery and failover across your connected accounts.";
+  "Use Cline's rotating free models in OpenCode V2. Connect your Cline account for live model discovery, request failover and session pinning.";
 const steps = [
   {
     title: "Install the plugin.",
@@ -15,13 +15,13 @@ const steps = [
   },
   {
     title: "Connect your Cline account.",
-    body: "In OpenCode, choose Cline Free. Sign in in your browser, reuse your Cline CLI login, or provide a token.",
+    body: "Run /connect in OpenCode and choose Cline Free. Approve browser sign-in, reuse a Cline CLI login on this machine, or provide a Cline token.",
     command: "/connect",
     label: "Copy /connect command",
   },
   {
     title: "Choose a free model.",
-    body: "Search for “cline free” in the model picker. Use /variants to choose the reasoning effort your model supports.",
+    body: 'Search for "cline free" in the model picker. Use /variants to choose a reasoning effort your model supports. Models marked (paid) spend Cline credits.',
     command: "/models",
     label: "Copy /models command",
   },
@@ -33,20 +33,20 @@ const steps = [
     <HeroSection02 />
     <div class="wrap launch">
       <section class="launch-hero" id="setup" aria-labelledby="setup-title">
-        <div class="launch-heading">
-          <p class="eyebrow">INSTALL · CONNECT · CHOOSE</p>
+        <div class="launch-heading" data-reveal="fade">
+          <p class="eyebrow">Set up in OpenCode</p>
           <h2 id="setup-title">
-            Free models.
+            Install the plugin.
             <br />
-            Three steps away.
+            Connect your account.
           </h2>
           <p class="intro">
-            Use Cline’s rotating free models inside OpenCode V2, with automatic
-            discovery and failover across your connected accounts.
+            Run the install command in your terminal. Then sign in and choose a
+            model inside OpenCode. Requires OpenCode 2.x.
           </p>
         </div>
-        <div class="launch-console">
-          <ol class="step-menu">
+        <div class="launch-console" data-reveal="fade">
+          <ol class="step-menu" hidden>
             <li>
               <button
                 type="button"
@@ -93,21 +93,22 @@ const steps = [
           </section>
         </div>
         <p class="fine">
-          Setup guide — run these commands in OpenCode, not on this page.
-          Requires OpenCode 2.x.
+          This page shows commands. It doesn't run them or sign you in.
           <br />
-          Cline’s daily free quota applies. Models marked (paid) spend Cline
+          Cline's daily free quota applies. Models marked (paid) spend Cline
           credits.
         </p>
       </section>
       <section class="tutorial" id="tutorial" aria-labelledby="tutorial-title">
-        <p class="eyebrow">VIDEO WALKTHROUGH</p>
-        <h2 id="tutorial-title">Watch the full setup tutorial.</h2>
-        <p class="description">
-          Follow the walkthrough to install the plugin, connect your Cline
-          account, and choose a model in OpenCode.
-        </p>
-        <div class="video-frame">
+        <div data-reveal="fade">
+          <p class="eyebrow">Video walkthrough</p>
+          <h2 id="tutorial-title">Watch the setup in OpenCode.</h2>
+          <p class="description">
+            Follow the install and sign-in flow on screen. The written steps
+            above use the current install command.
+          </p>
+        </div>
+        <div class="video-frame" data-reveal="fade">
           <iframe
             src="https://www.youtube-nocookie.com/embed/xad4Rb9PNTE?playsinline=1"
             title="Full setup tutorial: How to Use Cline AI Models for FREE in OpenCode"
@@ -136,33 +137,27 @@ const steps = [
           </a>
         </div>
       </section>
-      <section class="support" aria-label="Plugin capabilities">
-        <div>
-          <span class="number">01 / DISCOVER</span>
-          <h2>Models that keep up.</h2>
+      <section class="support" aria-label="Quotas and account limits">
+        <div data-reveal="fade">
+          <span class="number">Free quota</span>
+          <h2>Daily limits still apply.</h2>
           <p>
-            The free list refreshes from Cline. New rotations don’t need a
-            plugin update.
+            Cline sets a daily free quota for each account and model. The plugin
+            tracks cooldowns. It does not remove limits or make paid models
+            free.
           </p>
         </div>
-        <div>
-          <span class="number">02 / CONNECT</span>
-          <h2>Your accounts, together.</h2>
+        <div data-reveal="fade">
+          <span class="number">Account status</span>
+          <h2>Check before you switch.</h2>
           <p>
-            Use browser sign-in, reuse your Cline CLI login, or connect with a
-            token.
-          </p>
-        </div>
-        <div>
-          <span class="number">03 / CONTINUE</span>
-          <h2>A limit isn’t the end.</h2>
-          <p>
-            When an account is capped, retry on the next healthy connected
-            account.
+            Ask OpenCode to run <code>cline_free_status</code> to check
+            connected accounts, cooldowns and accounts that need a new login.
+            Paid-model failover uses the next account's Cline credits.
           </p>
         </div>
       </section>
-      <footer class="footer">
+      <footer class="footer" data-reveal="fade">
         <p>MIT licensed · Yasir Khan</p>
         <nav aria-label="Project resources" class="footer-links">
           <a href="https://github.com/itsyasirkhandev/opencode-cline-free#readme">
@@ -205,6 +200,8 @@ const steps = [
       }
     });
   }
+  const stepMenu = document.querySelector<HTMLOListElement>(".step-menu");
+  if (stepMenu) stepMenu.hidden = false;
 
   let pressedButton: HTMLButtonElement | undefined;
   function releasePointer() {
@@ -223,4 +220,10 @@ const steps = [
   document.addEventListener("pointercancel", releasePointer);
   window.addEventListener("blur", releasePointer);
   document.addEventListener("keydown", releasePointer);
+</script>
+
+<script>
+  import { setupLandingMotion } from "../lib/landing-motion";
+
+  setupLandingMotion();
 </script>
