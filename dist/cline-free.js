@@ -921,7 +921,7 @@ async function savePoolFile(pool) {
   await lockPoolFile(file, () => persistPoolFile(pool, file));
 }
 async function lockPoolFile(file, fn, opts = {}) {
-  const { mkdir, open, rename, unlink, rmdir, stat, readFile, readdir } = await import("node:fs/promises");
+  const { mkdir, open, rename, unlink, rmdir, stat, readFile, readdir, utimes } = await import("node:fs/promises");
   const { dirname } = await import("node:path");
   await mkdir(dirname(file), { recursive: true });
   const lock = `${file}.lock`;
@@ -949,13 +949,15 @@ async function lockPoolFile(file, fn, opts = {}) {
   let acquired = false;
   try {
     await owner.writeFile(`${process.pid}`);
+    await owner.close().catch(() => {
+    });
     while (true) {
       try {
         await rename(candidate, lock);
         acquired = true;
         break;
       } catch (e) {
-        if (!["EEXIST", "ENOTEMPTY", "ENOTDIR", "EISDIR"].includes(e.code ?? "")) throw e;
+        if (!["EEXIST", "ENOTEMPTY", "ENOTDIR", "EISDIR", "EPERM"].includes(e.code ?? "")) throw e;
         try {
           const st = await stat(lock);
           if (st.isDirectory()) {
@@ -983,7 +985,7 @@ async function lockPoolFile(file, fn, opts = {}) {
     beat = setInterval(
       () => {
         const now = /* @__PURE__ */ new Date();
-        void owner.utimes(now, now).catch(() => {
+        void utimes(`${lock}/${ownerName}`, now, now).catch(() => {
         });
       },
       Math.max(10, Math.floor(staleMs / 3))
@@ -992,7 +994,8 @@ async function lockPoolFile(file, fn, opts = {}) {
     return await fn();
   } finally {
     if (beat) clearInterval(beat);
-    await owner.close();
+    await owner.close().catch(() => {
+    });
     if (acquired) {
       await unlink(`${lock}/${ownerName}`).catch(() => {
       });
