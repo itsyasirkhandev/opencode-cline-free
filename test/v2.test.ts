@@ -67,6 +67,24 @@ test("toModelInfo maps limits, inputs, cost and reasoning variants", () => {
   assert.deepEqual(unknown.cost, [{ input: 0, output: 0, cache: { read: 0, write: 0 } }])
 })
 
+test("toModelInfo exposes MiniMax M3.1 Flash capabilities and all five efforts", () => {
+  const model = toModelInfo({ id: "cline-free/minimax-m3.1-flash", name: "MiniMax M3.1 Flash" })
+  assert.equal(model.modelID, "cline-free/minimax-m3.1-flash")
+  assert.deepEqual(model.limit, { context: 1_000_000, output: 524_288 })
+  assert.deepEqual(model.capabilities.input, ["text", "image", "video"])
+  assert.deepEqual(
+    model.variants.map((variant) => ({ id: variant.id, settings: variant.settings })),
+    [
+      { id: "low", settings: { reasoningEffort: "low" } },
+      { id: "medium", settings: { reasoningEffort: "medium" } },
+      { id: "high", settings: { reasoningEffort: "high" } },
+      { id: "xhigh", settings: { reasoningEffort: "xhigh" } },
+      { id: "max", settings: { reasoningEffort: "max" } },
+    ],
+  )
+  assert.equal(model.settings, undefined)
+})
+
 test("providerInput targets the Cline gateway with the surface headers", () => {
   const { info, models } = providerInput([{ id: "cline-free/mimo-v2.6-flash" }], {})
   assert.equal(info.id, "cline-free")

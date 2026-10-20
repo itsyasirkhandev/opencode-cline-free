@@ -408,7 +408,19 @@ var DEFAULT_VARIANTS = ["low", "medium", "high"];
 var FULL = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 var NO_NONE = ["minimal", "low", "medium", "high", "xhigh", "max"];
 var MODELS = {
-  // --- Current free rotation (checked 2026-10-11) ---
+  // --- Free rotation registry (live discovery takes precedence) ---
+  // Checked 2026-10-20. Limits/inputs from Cline's public catalog row
+  // `minimax/minimax-m3.1-flash:free` (https://api.cline.bot/api/v1/ai/cline/models).
+  // Efforts from https://platform.minimax.io/docs/api-reference/text-openai-api;
+  // vendor-documented, not Cline probe-verified. Leave the base effort unset.
+  "cline-free/minimax-m3.1-flash": {
+    name: "MiniMax M3.1 Flash",
+    description: "MiniMax M3.1 Flash \u2014 multimodal reasoning model.",
+    status: "free",
+    limit: { context: 1e6, output: 524288 },
+    input: ["text", "image", "video"],
+    variants: ["low", "medium", "high", "xhigh", "max"]
+  },
   // Added 2026-10-11. Limits/cost/inputs from the catalog entry
   // `stepfun/step-5-preview`; efforts not probe-verified (DEFAULT_VARIANTS).
   "cline-free/step-5-preview": {

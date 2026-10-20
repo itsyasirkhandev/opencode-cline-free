@@ -41,6 +41,7 @@ test("fallback list matches the current free rotation", () => {
     FALLBACK_FREE.map((m) => m.id).sort(),
     [
       "cline-free/mimo-v2.6-flash",
+      "cline-free/minimax-m3.1-flash",
       "cline-free/muse-spark-1.3-contributor",
       "cline-free/solar-mini4",
       "cline-free/step-5-preview",
@@ -75,6 +76,21 @@ test("modelConfig maps variants and defaults", () => {
   const unknown = modelConfig({ id: "x/unknown" })
   assert.deepEqual(unknown.limit, { context: 200_000, output: 32_000 })
   assert.deepEqual(unknown.modalities.input, ["text"])
+})
+
+test("MiniMax M3.1 Flash pins researched metadata and vendor-documented efforts", () => {
+  const config = modelConfig({ id: "cline-free/minimax-m3.1-flash" })
+  assert.deepEqual(config.limit, { context: 1_000_000, output: 524_288 })
+  assert.deepEqual(config.modalities, { input: ["text", "image", "video"], output: ["text"] })
+  assert.deepEqual(config.variants, {
+    low: { reasoningEffort: "low" },
+    medium: { reasoningEffort: "medium" },
+    high: { reasoningEffort: "high" },
+    xhigh: { reasoningEffort: "xhigh" },
+    max: { reasoningEffort: "max" },
+  })
+  assert.equal("options" in config, false)
+  assert.ok(FALLBACK_FREE.some((entry) => entry.id === "cline-free/minimax-m3.1-flash"))
 })
 
 // --- http classification ---
