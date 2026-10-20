@@ -36,11 +36,15 @@ check. Availability can change; trust the live list over this snapshot.
 
 | Model id | Notes |
 |---|---|
-| `cline-free/minimax-m3.1-flash` | MiniMax M3.1 Flash · reasoning variants not probe-verified |
+| `cline-free/minimax-m3.1-flash` | MiniMax M3.1 Flash · 1M context, 524,288 output · text/image/video input · low, medium, high, xhigh, max (vendor-documented; not Cline probe-verified) |
 | `cline-free/nemotron-3.5-super-vl` | NVIDIA Nemotron 3.5 Super VL · reasoning variants not probe-verified |
 | `cline-free/mimo-v2.6-flash` | Cline-only free, MiMo 2.6 (309B MoE) · `none` (reasoning off), `high` (reasoning on) — on/off only |
 | `cline-free/muse-spark-1.3-contributor` | Cline-only free · minimal, low, medium, high, xhigh (`max` fails server-side) |
 | `cline-free/solar-mini4` | Cline-only free (added 2026-10-11), Upstage Solar Mini 4 (35B MoE, 524K context) · low, medium, high (not probe-verified) |
+
+MiniMax limits and input modalities are pinned from [Cline's model catalog](https://api.cline.bot/api/v1/ai/cline/models);
+its reasoning efforts follow [MiniMax's documentation](https://platform.minimax.io/docs/api-reference/text-openai-api).
+The plugin leaves the no-variant reasoning default unchanged.
 
 Registered even though they are **not** in the live `free` array (and **not free**):
 

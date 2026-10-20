@@ -9,9 +9,9 @@
  * - "stale": rotated out; metadata kept so the model still renders correctly
  *            if Cline brings it back
  *
- * Reasoning efforts are live-probed against the Cline gateway (2026-09-24,
- * rechecked for the 2026-09-26 rotation). Each list is exactly the set the
- * endpoint accepts for that model:
+ * Historical reasoning efforts were live-probed against the Cline gateway
+ * (2026-09-24, rechecked for the 2026-09-26 rotation). Model-specific comments
+ * identify vendor-documented entries that are not Cline probe-verified:
  * - space-bunny-alpha / pixel-canary: minimal..max (`none` → 400 "Reasoning is
  *   mandatory for this endpoint and cannot be disabled")
  * - mimo-v2.6-flash: on/off only → exposed as `none` (off) and `high` (on).
@@ -67,7 +67,19 @@ const FULL = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
 const NO_NONE = ["minimal", "low", "medium", "high", "xhigh", "max"]
 
 export const MODELS: Record<string, ModelSpec> = {
-  // --- Current free rotation (checked 2026-10-11) ---
+  // --- Free rotation registry (live discovery takes precedence) ---
+  // Checked 2026-10-20. Limits/inputs from Cline's public catalog row
+  // `minimax/minimax-m3.1-flash:free` (https://api.cline.bot/api/v1/ai/cline/models).
+  // Efforts from https://platform.minimax.io/docs/api-reference/text-openai-api;
+  // vendor-documented, not Cline probe-verified. Leave the base effort unset.
+  "cline-free/minimax-m3.1-flash": {
+    name: "MiniMax M3.1 Flash",
+    description: "MiniMax M3.1 Flash — multimodal reasoning model.",
+    status: "free",
+    limit: { context: 1_000_000, output: 524_288 },
+    input: ["text", "image", "video"],
+    variants: ["low", "medium", "high", "xhigh", "max"],
+  },
   // Added 2026-10-11. Limits/cost/inputs from the catalog entry
   // `stepfun/step-5-preview`; efforts not probe-verified (DEFAULT_VARIANTS).
   "cline-free/step-5-preview": {
@@ -258,10 +270,10 @@ export function displayName(entry: FreeEntry): string {
 }
 
 /**
- * Model config for OpenCode. Precedence per field: hand-verified registry
+ * Model config for OpenCode. Precedence per field: explicit registry
  * entry > automatically discovered catalog metadata > safe defaults. A brand
  * new free model therefore works with correct limits/inputs/cost without any
- * code change; add a registry entry only to pin probe-verified efforts.
+ * code change; registry comments record the source of pinned metadata/efforts.
  */
 export function modelConfig(entry: FreeEntry, auto?: AutoMeta) {
   const spec = MODELS[entry.id]
