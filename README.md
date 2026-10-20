@@ -29,14 +29,18 @@ automatically. Offline it falls back to a bundled list.
 </tr>
 </table>
 
-## Current free rotation (checked 2026-10-11)
+## Current free rotation (checked 2026-10-20)
+
+The models below are listed in the live endpoint's `free` array as of this
+check. Availability can change; trust the live list over this snapshot.
 
 | Model id | Notes |
 |---|---|
-| `cline-free/step-5-preview` | Cline-only free (added 2026-10-11), StepFun Step 5 Preview (sparse MoE, 1M context) · low, medium, high (not probe-verified) |
-| `cline-free/solar-mini4` | Cline-only free (added 2026-10-11), Upstage Solar Mini 4 (35B MoE, 524K context) · low, medium, high (not probe-verified) |
+| `cline-free/minimax-m3.1-flash` | MiniMax M3.1 Flash · reasoning variants not probe-verified |
+| `cline-free/nemotron-3.5-super-vl` | NVIDIA Nemotron 3.5 Super VL · reasoning variants not probe-verified |
 | `cline-free/mimo-v2.6-flash` | Cline-only free, MiMo 2.6 (309B MoE) · `none` (reasoning off), `high` (reasoning on) — on/off only |
 | `cline-free/muse-spark-1.3-contributor` | Cline-only free · minimal, low, medium, high, xhigh (`max` fails server-side) |
+| `cline-free/solar-mini4` | Cline-only free (added 2026-10-11), Upstage Solar Mini 4 (35B MoE, 524K context) · low, medium, high (not probe-verified) |
 
 Registered even though they are **not** in the live `free` array (and **not free**):
 
@@ -46,6 +50,7 @@ Registered even though they are **not** in the live `free` array (and **not free
 
 Rotated out of the free list (ids kept in the plugin as known/stale where useful):
 
+- `cline-free/step-5-preview` (not in the live `free` array as of 2026-10-20)
 - `stealth/space-bunny-alpha` (rotated out 2026-10-06)
 - `cline-free/deepseek-v4.1-flash` (rotated out 2026-10-05; Cline now lists DeepSeek V4.1 Flash at paid rates)
 - `stealth/pixel-canary`, `cline-free/gemini-3.8-flash` (rotated out 2026-10-04)
