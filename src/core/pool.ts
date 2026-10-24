@@ -438,7 +438,7 @@ async function lockPoolFile<T>(
   fn: () => Promise<T>,
   opts: { timeoutMs?: number; staleMs?: number } = {},
 ): Promise<T> {
-  const { mkdir, open, rename, unlink, rmdir, stat, readFile, readdir } = await import("node:fs/promises")
+  const { mkdir, open, rename, unlink, rmdir, stat, readFile, readdir, utimes } = await import("node:fs/promises")
   const { dirname } = await import("node:path")
   await mkdir(dirname(file), { recursive: true })
   const lock = `${file}.lock`
@@ -465,13 +465,21 @@ async function lockPoolFile<T>(
   let acquired = false
   try {
     await owner.writeFile(`${process.pid}`)
+    // Windows: a directory containing an open file handle cannot be renamed
+    // (rename fails with EPERM). POSIX allows it, so this only broke on
+    // Windows. The handle is no longer needed after the PID write: the
+    // heartbeat below touches the owner file by path instead.
+    await owner.close().catch(() => {})
     while (true) {
       try {
         await rename(candidate, lock)
         acquired = true
         break
       } catch (e) {
-        if (!["EEXIST", "ENOTEMPTY", "ENOTDIR", "EISDIR"].includes((e as NodeJS.ErrnoException).code ?? "")) throw e
+        // Windows also surfaces directory-rename contention (the lock
+        // directory already exists, e.g. held by a live peer) as EPERM, so
+        // it must be retried like the other contention codes.
+        if (!["EEXIST", "ENOTEMPTY", "ENOTDIR", "EISDIR", "EPERM"].includes((e as NodeJS.ErrnoException).code ?? "")) throw e
         try {
           const st = await stat(lock)
           if (st.isDirectory()) {
@@ -503,7 +511,8 @@ async function lockPoolFile<T>(
     beat = setInterval(
       () => {
         const now = new Date()
-        void owner.utimes(now, now).catch(() => {})
+        // Touch by path: the handle was closed before the rename (see above).
+        void utimes(`${lock}/${ownerName}`, now, now).catch(() => {})
       },
       Math.max(10, Math.floor(staleMs / 3)),
     )
@@ -511,7 +520,7 @@ async function lockPoolFile<T>(
     return await fn()
   } finally {
     if (beat) clearInterval(beat)
-    await owner.close()
+    await owner.close().catch(() => {})
     if (acquired) {
       await unlink(`${lock}/${ownerName}`).catch(() => {})
       await rmdir(lock).catch(() => {})
