@@ -81,7 +81,43 @@ refresh if the saved copy was older).
 
 ## Install
 
-One command (OpenCode V2):
+### 1. One-line automated install (Fastest — works for Desktop & CLI)
+
+Works on any system without manually editing config or system PATH environment variables:
+
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/itsyasirkhandev/opencode-cline-free/main/install.ps1 | iex
+```
+
+**macOS / Linux (Terminal):**
+```bash
+curl -fsSL https://raw.githubusercontent.com/itsyasirkhandev/opencode-cline-free/main/install.sh | bash
+```
+
+The script automatically detects OpenCode Desktop or CLI, configures your global `opencode.json`, and gets everything ready.
+
+### 2. OpenCode Desktop (Zero-terminal GUI method)
+
+If you use the OpenCode Desktop app, you do not need the CLI, command prompt, or PATH modifications:
+
+1. Open your global `opencode.json` file:
+   - **Windows:** `%USERPROFILE%\.config\opencode\opencode.json`
+   - **macOS / Linux:** `~/.config/opencode/opencode.json`
+2. Add `"github:itsyasirkhandev/opencode-cline-free"` to the `plugins` array:
+   ```json
+   {
+     "$schema": "https://opencode.ai/config.json",
+     "plugins": [
+       "github:itsyasirkhandev/opencode-cline-free"
+     ]
+   }
+   ```
+3. Restart OpenCode Desktop. OpenCode will automatically download and cache the plugin, showing `cline-free` under **Settings > Extensions > Plugins** and **Settings > Providers**.
+
+### 3. OpenCode CLI
+
+If you have the `opencode` command-line tool installed on your PATH:
 
 ```bash
 opencode plugin add github:itsyasirkhandev/opencode-cline-free
@@ -90,7 +126,16 @@ opencode plugin add github:itsyasirkhandev/opencode-cline-free
 This installs the plugin and adds it to your global `opencode.json`. Update
 later with `opencode plugin update`, remove with `opencode plugin remove`.
 
-### Manual install
+### 4. Standalone file install (Offline / Direct copy)
+
+Download [`dist/cline-free.js`](https://raw.githubusercontent.com/itsyasirkhandev/opencode-cline-free/main/dist/cline-free.js) directly into your global plugins directory:
+
+- **Windows:** `%USERPROFILE%\.config\opencode\plugins\cline-free.js`
+- **macOS / Linux:** `~/.config/opencode/plugins/cline-free.js`
+
+OpenCode automatically discovers `.js` files placed in `plugins/` on startup without needing configuration in `opencode.json`.
+
+Alternatively, if you cloned the repository locally:
 
 ```bash
 git clone https://github.com/itsyasirkhandev/opencode-cline-free.git
@@ -105,8 +150,7 @@ mkdir -p .opencode/plugins
 cp dist/cline-free.js .opencode/plugins/cline-free.js
 ```
 
-Or load the clone directly (V2 only accepts plugin **directories** in config,
-not single files):
+Or load the clone directly by path (OpenCode V2 config):
 
 ```json
 { "plugins": ["/path/to/opencode-cline-free"] }
