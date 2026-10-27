@@ -76,12 +76,14 @@ export function HeroSection02() {
         <div className="hero-line hero-line-tools">
           <div className="integration-pair" data-reveal="connection">
             <div className="integration-product">
-              <img
-                src={`${base}brands/opencode.svg`}
-                alt=""
-                width={32}
-                height={40}
-              />
+              <div className="brand-icon-box">
+                <img
+                  src={`${base}brands/opencode.svg`}
+                  alt=""
+                  width={32}
+                  height={40}
+                />
+              </div>
               <span>OpenCode</span>
             </div>
             <span className="integration-link" aria-hidden="true">
@@ -90,12 +92,14 @@ export function HeroSection02() {
               <span />
             </span>
             <div className="integration-product">
-              <img
-                src={`${base}brands/cline.svg`}
-                alt=""
-                width={48}
-                height={48}
-              />
+              <div className="brand-icon-box">
+                <img
+                  src={`${base}brands/cline.svg`}
+                  alt=""
+                  width={36}
+                  height={36}
+                />
+              </div>
               <span>Cline</span>
             </div>
           </div>

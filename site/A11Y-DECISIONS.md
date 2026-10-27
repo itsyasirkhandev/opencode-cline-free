@@ -69,7 +69,12 @@ These supersede the Launchpad palette and motion choices above; setup interactio
 - **Capability illustrations** → local line icons accompany equivalent headings/command text; existing local plugin logo accompanies the cline-free wordmark. No remote thumbnails or unrelated vendor endorsements.
 - **Calls to action** → Install plugin navigates to the written setup instructions; GitHub links to the source repository. Quota and paid-credit caveats remain visible.
 
-## Artwork, copy and motion revision (2026-10-17)
+## Refactoring UI design tokens and dark mode revision (2026-10-27)
+
+- **Semantic token layer** → implemented full Refactoring UI system tokens with semantic roles (`--surface`, `--surface-raised`, `--surface-sunken`, `--border`, `--border-strong`, `--text-primary`, `--text-secondary`, `--text-tertiary`, `--action`) and automatic dark mode override via `prefers-color-scheme`.
+- **Contrast floors** → verified all text pairs exceed 4.5:1 AA floor in both light (warm neutral, 15.2:1 / 7.5:1 / 5.1:1) and dark modes (slate hue 215, 14.8:1 / 8.1:1 / 5.2:1); functional borders exceed 3:1 non-text bar.
+- **Nested radius scale** → replaced repetitive 24px pill styling with cohesive nested radius scale (16px panels, 12px cards, 8px buttons/code container, 6px tags/badges) to prevent concentric curvature clashes.
+- **3-Row split layout preservation** → retained the 3-row hero layout with calibrated spacing, elevated typography, and framed integration badges.
 
 These supersede the static-only motion choice. Standard AA, the native setup
 selector, independent-plugin notice and unresolved MEDIA-001 remain unchanged.

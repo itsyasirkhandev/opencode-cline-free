@@ -1,6 +1,7 @@
 # Open accessibility issue — no approved production exception
 
 ## MEDIA-001: Setup tutorial lacks captions
+
 - Component: #tutorial iframe, video xad4Rb9PNTE.
 - Requirement: WCAG 2.2 SC 1.2.2, prerecorded captions.
 - Severity: HIGH; users who cannot hear the audio cannot access its spoken instruction.
