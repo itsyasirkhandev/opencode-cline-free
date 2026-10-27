@@ -136,6 +136,7 @@ export function HeroSection02() {
             <article
               key={capability.name}
               className={`tool-card${index === 0 ? " tool-card-featured" : ""}`}
+              data-reveal="rise"
             >
               <div className="tool-visual" data-reveal="illustration">
                 <img

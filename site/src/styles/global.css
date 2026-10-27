@@ -596,34 +596,130 @@ code {
   text-decoration: underline;
 }
 
-/* Motion is optional, pointer-only on controls, and never hides default content. */
-@media (prefers-reduced-motion: no-preference) {
-  .copy[data-pointer-press],
-  .step-menu button[data-pointer-press] {
-    transform: scale(0.97);
-    transition: transform 160ms var(--ease-out);
+/* Motion: pointer-only on controls, gated hovers, and never hides default content. */
+.hero-cta,
+.copy,
+.step-menu button,
+[data-slot="button"] {
+  transition:
+    transform 160ms var(--ease-out),
+    background-color 160ms var(--ease-out),
+    border-color 160ms var(--ease-out),
+    color 160ms var(--ease-out),
+    box-shadow 160ms var(--ease-out);
+}
+
+.hero-cta:active,
+.copy:active,
+.copy[data-pointer-press],
+.step-menu button:active,
+.step-menu button[data-pointer-press],
+[data-slot="button"]:active {
+  transform: scale(0.97);
+}
+
+.copy[data-copied="true"] {
+  background-color: var(--accent);
+  color: var(--panel);
+}
+
+.design-brand {
+  transition:
+    opacity 160ms var(--ease-out),
+    transform 160ms var(--ease-out);
+}
+.design-brand:active {
+  transform: scale(0.98);
+}
+
+.footer-links a,
+.tutorial-meta a {
+  transition:
+    opacity 160ms var(--ease-out),
+    color 160ms var(--ease-out);
+}
+
+.tool-card {
+  transition:
+    transform 200ms var(--ease-out),
+    box-shadow 200ms var(--ease-out),
+    border-color 200ms var(--ease-out);
+}
+
+.tool-visual img {
+  transition: transform 200ms var(--ease-out);
+}
+
+.support > div {
+  transition:
+    transform 200ms var(--ease-out),
+    box-shadow 200ms var(--ease-out);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .hero-cta:hover {
+    transform: translateY(-2px);
   }
-  @media (hover: hover) and (pointer: fine) {
-    .hero-cta:hover {
-      transform: translateY(-2px);
-    }
-    .hero-cta {
-      transition: transform 160ms ease;
-    }
-    .tool-card:hover .tool-visual img {
-      transform: scale(1.02);
-    }
-    .tool-visual img {
-      transition: transform 200ms ease;
-    }
+  .tool-card:hover {
+    transform: translateY(-2px);
+    border-color: var(--control);
+    box-shadow: 0 12px 28px hsla(210, 20%, 15%, 0.08);
+  }
+  .tool-card:hover .tool-visual img {
+    transform: scale(1.02);
+  }
+  .tool-card:active {
+    transform: translateY(0);
+  }
+  .support > div:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 12px 28px hsla(210, 20%, 15%, 0.08);
+  }
+  .design-brand:hover {
+    opacity: 0.85;
+  }
+  .footer-links a:hover,
+  .tutorial-meta a:hover {
+    opacity: 0.75;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .step-content > [data-step-panel]:not([hidden]) {
+    animation: stepPanelEnter 200ms var(--ease-out);
+  }
+}
+
+@keyframes stepPanelEnter {
+  from {
+    opacity: 0.9;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .hero-cta,
+  .hero-cta:active,
+  .tool-card,
+  .tool-card:hover,
   .tool-visual img,
+  .support > div,
+  .support > div:hover,
   .copy,
-  .step-menu button {
+  .copy:active,
+  .step-menu button,
+  .step-menu button:active,
+  [data-slot="button"],
+  [data-slot="button"]:active,
+  .design-brand,
+  .design-brand:active {
     transform: none;
+  }
+  .step-content > [data-step-panel]:not([hidden]) {
+    animation: none;
   }
 }
